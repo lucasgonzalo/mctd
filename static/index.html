@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mctd · GLPK</title>
+    <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+  <style>
+    :root {
+      --bg: #1e1e2e; --panel: #181825; --card: #313244;
+      --text: #cdd6f4; --muted: #a6adc8; --accent: #89b4fa;
+      --ok: #a6e3a1; --err: #f38ba8; --border: #45475a;
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      display: grid; grid-template-columns: var(--sidebar-w, 230px) 1fr 6px var(--result-w, 420px); gap: 12px;
+      height: 100vh; padding: 12px; background: var(--bg); color: var(--text);
+      font-family: system-ui, sans-serif; font-size: 14px;
+    }
+    /* Sidebar */
+    aside { background: var(--panel); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; min-height: 0; }
+    .aside-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .aside-head h1 { font-size: 15px; color: var(--accent); }
+    .brand-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .brand-row img { display: block; border-radius: 6px; }
+    .icon-btn { padding: 4px 8px; font-size: 12px; line-height: 1; }
+    .icon-btn.round { width: 22px; height: 22px; padding: 0; border-radius: 50%; font-weight: 700; color: var(--accent); }
+    .aside-section { display: flex; flex-direction: column; min-height: 0; }
+    .aside-section h2 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--muted); margin: 6px 0; font-weight: 600;
+    }
+    #runs-section { flex: 0 1 auto; max-height: 38%; }
+    #runs-list { overflow-y: auto; min-height: 0; }
+    #files-section { flex: 1; }
+    #model-list { flex: 1; overflow-y: auto; min-height: 0; }
+    .run-item {
+      padding: 6px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+      display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+      font-size: 13px;
+    }
+    .run-item:hover { background: var(--card); }
+    .run-item.active { background: var(--card); outline: 1px solid var(--accent); }
+    .run-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .run-item .when { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+    .runs-empty { font-size: 12px; color: var(--muted); padding: 4px 10px; }
+    body.sidebar-collapsed { --sidebar-w: 44px; }
+    body.sidebar-collapsed .brand-row { justify-content: center; margin-bottom: 6px; }
+    body.sidebar-collapsed #btn-guide { display: none; }
+    body.sidebar-collapsed .aside-head { justify-content: center; margin-bottom: 0; }
+    body.sidebar-collapsed .aside-head h1,
+    body.sidebar-collapsed .aside-section,
+    body.sidebar-collapsed #btn-new { display: none; }
+    .model-item {
+      padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+      display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+    }
+    .model-item:hover { background: var(--card); }
+    .model-item.active { background: var(--card); outline: 1px solid var(--accent); }
+    .model-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .model-item .date { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+    .model-item .del {
+      visibility: hidden; background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 12px; padding: 2px 4px; flex-shrink: 0; line-height: 1;
+    }
+    .model-item:hover .del { visibility: visible; }
+    .model-item .del:hover { color: var(--err); }
+    /* Main */
+    main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .toolbar { display: flex; gap: 8px; align-items: center; }
+    .toolbar input {
+      flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 12px; color: var(--text); font-size: 14px;
+    }
+    button {
+      background: var(--card); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 14px;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); color: #1e1e2e; font-weight: 600; border: none; }
+    button:disabled { opacity: .5; cursor: wait; }
+    #editor {
+      flex: 1; min-height: 120px; resize: none; width: 100%;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px; font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5;
+      tab-size: 4; white-space: pre; overflow-wrap: normal; overflow: auto;
+    }
+    #editor:focus { outline: 1px solid var(--accent); }
+    /* Results */
+    #result-panel { background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+    #run-header { padding: 10px 12px 4px; font-size: 12px; color: var(--muted); }
+    #run-header:not(:empty) { border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .tabs { display: flex; border-bottom: 1px solid var(--border); }
+    .tab { padding: 8px 16px; cursor: pointer; color: var(--muted); }
+    .tab.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
+    #result-body {
+      flex: 1; overflow: auto; padding: 12px; margin: 0;
+      font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.45; white-space: pre;
+    }
+    #status-line { padding: 6px 12px; font-size: 12px; border-top: 1px solid var(--border); color: var(--muted); }
+    .exit-ok { color: var(--ok); } .exit-err { color: var(--err); }
+
+    /* Draggable divider between editor and results */
+    #drag-handle {
+      grid-column: 3; border-radius: 3px; cursor: col-resize;
+      background: transparent; transition: background .15s;
+    }
+    #drag-handle:hover, #drag-handle.active { background: var(--accent); }
+
+    /* Modal */
+    #modal-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
+      display: none; align-items: center; justify-content: center; z-index: 10;
+    }
+    #modal-overlay.open { display: flex; }
+    #modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px; width: 90%; max-width: 380px; }
+    #modal h2 { font-size: 15px; margin-bottom: 8px; }
+    #modal p { font-size: 13px; color: var(--muted); margin-bottom: 16px; line-height: 1.5; }
+    #modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+    button.danger { background: var(--err); color: #1e1e2e; font-weight: 600; border: none; }
+
+    /* Narrow screens: results panel moves below the editor */
+    @media (max-width: 1150px) {
+      body { grid-template-columns: var(--sidebar-w, 230px) 1fr; grid-template-rows: minmax(0, 1fr) 38vh; }
+      aside { grid-row: 1 / 3; }
+      #result-panel { grid-column: 2; grid-row: 2; }
+      #drag-handle { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <div class="brand-row">
+      <img src="/static/logo.svg" alt="mctd" width="26" height="26">
+      <button id="btn-guide" class="icon-btn round" title="Guía de uso">?</button>
+    </div>
+    <div class="aside-head">
+      <h1>Modelos</h1>
+      <button id="btn-sidebar" class="icon-btn" title="Colapsar panel">◀</button>
+    </div>
+    <div id="runs-section" class="aside-section">
+      <h2>Últimas ejecuciones</h2>
+      <div id="runs-list"></div>
+    </div>
+    <div id="files-section" class="aside-section">
+      <h2>Archivos</h2>
+      <div id="model-list"></div>
+      <button id="btn-new" style="margin-top:8px">+ Nuevo</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="toolbar">
+      <input id="model-name" placeholder="nombre_del_modelo" spellcheck="false">
+      <button id="btn-save">Guardar</button>
+      <button id="btn-run" class="primary">Resolver ▶</button>
+    </div>
+    <textarea id="editor" wrap="off" spellcheck="false" placeholder="var x >= 0;&#10;var y >= 0;&#10;&#10;maximize z: x + 2*y;&#10;&#10;s.t. r: x + y &lt;= 4;&#10;&#10;end;"></textarea>
+  </main>
+
+  <div id="drag-handle" title="Arrastrá para ajustar · doble clic reinicia"></div>
+
+  <div id="result-panel">
+    <div id="run-header"></div>
+    <div class="tabs">
+      <div class="tab active" data-tab="solution">Solución</div>
+      <div class="tab" data-tab="log">Log</div>
+    </div>
+    <pre id="result-body">— sin resultados todavía —</pre>
+    <div id="status-line"></div>
+  </div>
+
+  <div id="modal-overlay">
+    <div id="modal">
+      <h2>Eliminar modelo</h2>
+      <p id="modal-text"></p>
+      <div class="actions">
+        <button id="modal-cancel">Cancelar</button>
+        <button id="modal-confirm" class="danger">Eliminar</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentTab = 'solution';
+    let lastRun = null;
+    let currentRunKey = null; // '${model}|${raw}' of the run shown in the results panel
+
+    // --- sidebar lists: executions (by run time) + files (by creation date) ---
+    async function loadModels() {
+      const [modelsRes, runsRes] = await Promise.all([fetch('/api/models'), fetch('/api/runs')]);
+      const models = await modelsRes.json();
+      const runs = await runsRes.json();
+
+      models.sort((a, b) => b.created.localeCompare(a.created)); // newest created first, stable across runs
+
+      const list = $('model-list');
+      list.innerHTML = '';
+      for (const m of models) {
+        const div = document.createElement('div');
+        div.className = 'model-item' + (m.name === $('model-name').value ? ' active' : '');
+        const name = document.createElement('span');
+        name.className = 'name'; name.textContent = m.name;
+        const date = document.createElement('span');
+        date.className = 'date'; date.textContent = m.created.slice(0, 10);
+        const del = document.createElement('button');
+        del.className = 'del'; del.textContent = '🗑'; del.title = 'Eliminar modelo';
+        del.onclick = (e) => { e.stopPropagation(); confirmDelete(m.name); };
+        div.append(name, date, del);
+        div.onclick = () => openModel(m.name);
+        list.appendChild(div);
+      }
+
+      const rlist = $('runs-list');
+      rlist.innerHTML = '';
+      if (!runs.length) {
+        const empty = document.createElement('div');
+        empty.className = 'runs-empty';
+        empty.textContent = 'Todavía no hay ejecuciones';
+        rlist.appendChild(empty);
+      }
+      for (const r of runs) {
+        const div = document.createElement('div');
+        div.className = 'run-item' + (currentRunKey === `${r.model}|${r.raw}` ? ' active' : '');
+        const name = document.createElement('span');
+        name.className = 'name'; name.textContent = r.model; name.title = r.stamp;
+        const when = document.createElement('span');
+        when.className = 'when'; when.textContent = r.raw.slice(6, 8) + '/' + r.raw.slice(4, 6) + ' ' + r.raw.slice(9, 11) + ':' + r.raw.slice(11, 13);
+        div.append(name, when);
+        div.onclick = () => loadRun(r.model, r.raw);
+        rlist.appendChild(div);
+      }
+    }
+
+    async function loadRun(model, raw) {
+      const res = await fetch(`/api/runs/${model}/${raw}`);
+      if (!res.ok) { loadModels(); return; } // run vanished (deleted) -> refresh
+      const run = await res.json();
+      run.exit_code = null;
+      lastRun = run;
+      currentRunKey = `${model}|${raw}`;
+      render();
+      loadModels();
+    }
+
+    function clearResults() {
+      lastRun = null;
+      currentRunKey = null;
+      $('result-body').textContent = '— sin resultados todavía —';
+      $('status-line').innerHTML = '';
+      $('run-header').textContent = '';
+    }
+
+    async function openModel(name) {
+      // clear first so the previous model's results never linger while loading
+      clearResults();
+      const res = await fetch(`/api/models/${name}`);
+      if (!res.ok) return;
+      const model = await res.json();
+      $('model-name').value = model.name;
+      $('editor').value = model.content;
+      if (model.last_run) {
+        lastRun = model.last_run;
+        currentRunKey = `${model.name}|${model.last_run.raw}`;
+        render();
+      }
+      loadModels();
+    }
+
+    // --- delete with confirmation modal ---
+    function confirmDelete(name) {
+      $('modal-text').textContent = `¿Eliminar "${name}" y todas sus ejecuciones guardadas? Esta acción no se puede deshacer.`;
+      $('modal-overlay').classList.add('open');
+      $('modal-confirm').onclick = async () => {
+        const res = await fetch(`/api/models/${name}`, { method: 'DELETE' });
+        if (!res.ok) { alert('Error al eliminar'); return; }
+        closeModal();
+        if ($('model-name').value === name) {
+          $('model-name').value = '';
+          $('editor').value = '';
+          clearResults();
+        }
+        loadModels();
+      };
+    }
+    function closeModal() { $('modal-overlay').classList.remove('open'); }
+    $('modal-cancel').onclick = closeModal;
+    $('modal-overlay').onclick = (e) => { if (e.target === $('modal-overlay')) closeModal(); };
+
+    // --- actions ---
+    $('btn-new').onclick = () => {
+      $('model-name').value = '';
+      $('editor').value = '';
+      clearResults();
+      $('editor').focus();
+      loadModels();
+    };
+
+    $('btn-save').onclick = async () => {
+      const name = $('model-name').value.trim();
+      if (!name) { alert('Poné un nombre al modelo'); return; }
+      const res = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, content: $('editor').value }),
+      });
+      if (!res.ok) { alert((await res.json()).detail || 'Error al guardar'); return; }
+      loadModels();
+    };
+
+    $('btn-run').onclick = async () => {
+      const btn = $('btn-run');
+      btn.disabled = true; btn.textContent = 'Resolviendo…';
+      try {
+        // autosave before running so the file is never stale
+        const name = $('model-name').value.trim();
+        if (!name) { alert('Poné un nombre al modelo'); return; }
+        await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, content: $('editor').value }),
+        });
+        const res = await fetch('/api/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        if (!res.ok) { alert((await res.json()).detail || 'Error al ejecutar'); return; }
+        lastRun = await res.json();
+        currentRunKey = `${name}|${lastRun.raw}`;
+        render();
+        loadModels();
+      } finally {
+        btn.disabled = false; btn.textContent = 'Resolver ▶';
+      }
+    };
+
+    // --- results ---
+    function render() {
+      if (!lastRun) return;
+      $('result-body').textContent = lastRun[currentTab] || '(vacío)';
+      const who = lastRun.model ? `${lastRun.model} · ` : '';
+      $('run-header').textContent = lastRun.stamp ? `${who}Ejecutado: ${lastRun.stamp}` : '';
+      const line = $('status-line');
+      line.innerHTML = '';
+      const span = document.createElement('span');
+      if (lastRun.exit_code === null) {
+        span.textContent = '⟲ ejecución guardada';
+      } else if (lastRun.exit_code === 0) {
+        span.className = 'exit-ok';
+        span.textContent = `✓ exit 0 · ${lastRun.solution_file}`;
+      } else {
+        span.className = 'exit-err';
+        span.textContent = `✗ exit ${lastRun.exit_code} — revisá el log, suele ser error de sintaxis`;
+      }
+      line.appendChild(span);
+    }
+
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.onclick = () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        currentTab = tab.dataset.tab;
+        render();
+      };
+    });
+
+    // --- guide ---
+    $('btn-guide').onclick = () => { window.location.href = '/guide'; };
+
+    // --- sidebar collapse ---
+    $('btn-sidebar').onclick = () => {
+      const collapsed = document.body.classList.toggle('sidebar-collapsed');
+      $('btn-sidebar').textContent = collapsed ? '▶' : '◀';
+      $('btn-sidebar').title = collapsed ? 'Expandir panel' : 'Colapsar panel';
+    };
+
+    // --- draggable divider: editor | results ---
+    const handle = $('drag-handle');
+    let dragging = false;
+    handle.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      handle.classList.add('active');
+      handle.setPointerCapture(e.pointerId);
+      document.body.style.userSelect = 'none';
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      // results width = from pointer to the right edge (minus body padding)
+      const w = window.innerWidth - e.clientX - 12;
+      const clamped = Math.min(Math.max(w, 280), 720);
+      document.documentElement.style.setProperty('--result-w', clamped + 'px');
+    });
+    const stopDrag = () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('active');
+      document.body.style.userSelect = '';
+    };
+    handle.addEventListener('pointerup', stopDrag);
+    handle.addEventListener('pointercancel', stopDrag);
+    handle.addEventListener('dblclick', () => {
+      document.documentElement.style.setProperty('--result-w', '420px');
+    });
+
+    // Tab key inserts spaces instead of leaving the editor
+    $('editor').addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const { selectionStart: s, selectionEnd: end, value } = e.target;
+        e.target.value = value.slice(0, s) + '    ' + value.slice(end);
+        e.target.selectionStart = e.target.selectionEnd = s + 4;
+      }
+    });
+
+    loadModels();
+  </script>
+</body>
+</html>

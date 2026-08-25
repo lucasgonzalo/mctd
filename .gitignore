@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Per-clone data: models & run results belong to each user, not the repo
+models/*
+!models/.gitkeep
+results/*
+!results/.gitkeep

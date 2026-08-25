@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guía · mctd</title>
+  <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+  <style>
+    :root {
+      --bg: #1e1e2e; --panel: #181825; --card: #313244;
+      --text: #cdd6f4; --muted: #a6adc8; --accent: #89b4fa;
+      --ok: #a6e3a1; --border: #45475a;
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: system-ui, sans-serif; font-size: 15px; line-height: 1.6;
+      padding: 24px 16px 60px;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+    header img { border-radius: 8px; }
+    header h1 { font-size: 20px; }
+    header .back { margin-left: auto; }
+    h2 { font-size: 16px; color: var(--accent); margin: 26px 0 8px; }
+    p, li { color: var(--text); }
+    ul { padding-left: 22px; margin: 6px 0; }
+    code {
+      background: var(--card); border-radius: 4px; padding: 1px 6px;
+      font-family: ui-monospace, monospace; font-size: 13px;
+    }
+    pre {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px; overflow-x: auto; font-size: 13px; line-height: 1.5;
+      font-family: ui-monospace, monospace; margin: 10px 0;
+    }
+    .note { color: var(--muted); font-size: 13px; }
+    button {
+      background: var(--accent); color: #1e1e2e; font-weight: 600; border: none;
+      border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 14px;
+    }
+    button:hover { filter: brightness(1.1); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/static/logo.svg" alt="mctd" width="34" height="34">
+      <h1>Guía de uso</h1>
+      <a href="/"><button class="back">← Volver</button></a>
+    </header>
+
+    <h2>¿Qué se puede resolver?</h2>
+    <p>Modelos de <strong>programación lineal</strong> escritos en lenguaje <strong>MathProg</strong> (GNU MathProg / GMPL), resueltos con <strong>GLPK</strong> (glpsol):</p>
+    <ul>
+      <li>Maximizar o minimizar una función objetivo lineal sujeta a restricciones lineales.</li>
+      <li>Problemas clásicos de la cursada: producción, mezcla, dieta, transporte, asignación.</li>
+      <li>Análisis de dualidad: los <em>precios sombra</em> aparecen en la columna <code>Marginal</code> de la solución.</li>
+    </ul>
+    <p class="note">Ejemplo mínimo:</p>
+    <pre>var x >= 0;
+var y >= 0;
+
+maximize z: x + 2*y;
+
+s.t. restriccion: x + y &lt;= 4;
+
+end;</pre>
+
+    <h2>¿Dónde se guardan los archivos?</h2>
+    <ul>
+      <li><code>models/*.mod</code> — tus modelos (se guardan con el botón <em>Guardar</em> o automáticamente al resolver).</li>
+      <li><code>results/{modelo}-{fecha-hora}.txt / .log</code> — solución y log de cada ejecución.</li>
+      <li><code>models/.meta/*.json</code> — fecha de creación de cada modelo (para el orden estable de la lista).</li>
+    </ul>
+    <p class="note">Todo vive en tu carpeta del proyecto fuera del contenedor Docker, así que no se pierde al reconstruir la imagen.</p>
+
+    <h2>¿Cuántas ejecuciones se conservan?</h2>
+    <p>Las <strong>últimas 5 ejecuciones por modelo</strong>. Al resolver, las corridas más viejas se borran automáticamente (historial circular). La sección <em>Últimas ejecuciones</em> del panel lateral muestra las 10 más recientes de todos los modelos.</p>
+
+    <h2>Stack</h2>
+    <ul>
+      <li><strong>Backend:</strong> Python + FastAPI, ejecuta <code>glpsol</code> (GLPK) por subprocess.</li>
+      <li><strong>Frontend:</strong> una sola página HTML + JavaScript vanilla, sin build.</li>
+      <li><strong>Entorno:</strong> Docker (python:3.12-slim + glpk-utils).</li>
+    </ul>
+
+    <h2>Cómo correr el proyecto</h2>
+    <pre># arrancar (o reconstruir tras cambiar código)
+docker compose up -d --build
+
+# abrir la app
+# http://localhost:8000
+
+# frenar
+docker compose down</pre>
+    <p class="note">Si el 8000 está ocupado, Docker usa el primer puerto libre del 8000–8005; verificá cuál tomó con <code>docker compose ps</code>.</p>
+  </div>
+</body>
+</html>
