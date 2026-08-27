@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 — 2026-08-26
+
+- Editor con numeración de líneas (gutter lateral).
+- Resaltado de sintaxis MathProg: palabras reservadas, comentarios (`/* */` multilínea y `#`), cadenas y números.
+- Marcado de la línea con error de sintaxis reportada por glpsol (gutter rojo + mensaje en la barra de estado).
+
 ## 0.1.0 — 2026-08-25
 
 Primera versión funcional.

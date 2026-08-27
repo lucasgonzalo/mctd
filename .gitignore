@@ -10,6 +10,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Local tooling
+.atl/
+
 # Per-clone data: models & run results belong to each user, not the repo
 models/*
 !models/.gitkeep

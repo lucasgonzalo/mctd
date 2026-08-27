@@ -2,8 +2,7 @@ services:
   mctd:
     build: .
     ports:
-      # first free port in the range is used; check `docker compose ps` if 8000 is busy
-      - "8000-8005:8000"
+      - "8000:8000"
     volumes:
       # persist models & results on the host, outside the container
       - ./models:/app/models

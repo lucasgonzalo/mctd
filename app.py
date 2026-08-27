@@ -30,6 +30,8 @@ RUNS_PER_MODEL = 5  # circular history: oldest runs beyond this are pruned
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 RUN_FILE_RE = re.compile(r"^(?P<model>.+)-(?P<stamp>\d{8}-\d{6})\.(?P<ext>txt|log)$")
 STAMP_RE = re.compile(r"^\d{8}-\d{6}$")
+# glpsol reports parse errors as "path/to/model.mod:<line>: <message>"
+ERROR_LINE_RE = re.compile(r"^\S*\.mod:(\d+):(.*)$", re.MULTILINE)
 
 MODELS_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -66,6 +68,25 @@ def run_files_for(name: str) -> dict:
 def fmt_stamp(s: str) -> str:
     """'20260825-022027' -> '2026-08-25 02:20:27'."""
     return f"{s[:4]}-{s[4:6]}-{s[6:8]} {s[9:11]}:{s[11:13]}:{s[13:15]}"
+
+
+def parse_glpk_error(log: str) -> tuple:
+    """(line, message) of the first syntax error in a glpsol log, or (None, None).
+
+    glpsol emits warnings in the same 'file.mod:LINE: msg' shape (e.g. a
+    missing 'end;' is auto-inserted with a warning) — those are skipped so
+    successful runs don't get flagged.
+    """
+    if not log:
+        return None, None
+    for m in ERROR_LINE_RE.finditer(log):
+        msg = m.group(2).strip()
+        if not msg.lower().startswith("warning"):
+            return int(m.group(1)), msg
+    m = re.search(r"\berror\b[^\n]*\bline\s+(\d+)", log, re.IGNORECASE)
+    if m:
+        return int(m.group(1)), "error reported by glpsol"
+    return None, None
 
 
 def created_at(name: str) -> str:
@@ -176,6 +197,7 @@ def get_model(name: str):
             "log": log.read_text(encoding="utf-8", errors="replace") if log and log.exists() else "",
             "solution_file": txt.name if txt else None,
         }
+        last_run["error_line"], last_run["error_msg"] = parse_glpk_error(last_run["log"])
 
     return {"name": name, "content": path.read_text(encoding="utf-8"), "last_run": last_run}
 
@@ -187,6 +209,9 @@ def delete_model(name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
     path.unlink()
+    meta = META_DIR / f"{name}.json"
+    if meta.exists():
+        meta.unlink()
     removed = 0
     for pair in run_files_for(name).values():
         for f in pair.values():
@@ -236,6 +261,7 @@ def run_model(payload: dict):
     solution = out_file.read_text(encoding="utf-8", errors="replace") if out_file.exists() else ""
     log = log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else ""
     pruned = prune_runs(name)
+    err_line, err_msg = parse_glpk_error(log)
 
     return {
         "exit_code": proc.returncode,
@@ -247,6 +273,8 @@ def run_model(payload: dict):
         "solution_file": out_file.name,
         "log_file": log_file.name,
         "pruned_runs": pruned,
+        "error_line": err_line,
+        "error_msg": err_msg,
     }
 
 

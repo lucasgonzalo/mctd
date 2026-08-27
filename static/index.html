@@ -79,13 +79,33 @@
     button:hover { border-color: var(--accent); }
     button.primary { background: var(--accent); color: #1e1e2e; font-weight: 600; border: none; }
     button:disabled { opacity: .5; cursor: wait; }
-    #editor {
-      flex: 1; min-height: 120px; resize: none; width: 100%;
-      background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px;
-      padding: 12px; font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.5;
-      tab-size: 4; white-space: pre; overflow-wrap: normal; overflow: auto;
+    /* Editor: line-number gutter + highlight overlay under a transparent textarea */
+    .editor-wrap {
+      flex: 1; min-height: 120px; display: flex; overflow: hidden;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     }
-    #editor:focus { outline: 1px solid var(--accent); }
+    .editor-wrap:focus-within { outline: 1px solid var(--accent); }
+    #gutter {
+      flex: 0 0 auto; padding: 12px 8px 12px 10px; overflow: hidden; user-select: none;
+      text-align: right; color: var(--muted); font: 12px/20px ui-monospace, monospace;
+      border-right: 1px solid var(--border);
+    }
+    #gutter .ln { height: 20px; min-width: 1.5em; }
+    #gutter .ln.err { color: var(--err); font-weight: 700; }
+    .code-area { position: relative; flex: 1; min-width: 0; }
+    #highlight, #editor {
+      position: absolute; inset: 0; margin: 0; border: 0; padding: 12px;
+      font: 13px/20px ui-monospace, monospace; white-space: pre; tab-size: 4; overflow: auto;
+    }
+    #highlight { overflow: hidden; pointer-events: none; color: var(--text); }
+    #editor {
+      background: transparent; color: transparent; caret-color: var(--text); resize: none;
+    }
+    #editor::placeholder { color: var(--muted); }
+    #editor::selection { background: rgba(137, 180, 250, .25); }
+    .kw { color: #cba6f7; } .cm { color: #f5a97f; font-style: italic; }
+    .str { color: #a6e3a1; } .num { color: #fab387; }
+    .lnerr { display: inline-block; width: 100%; background: rgba(243, 139, 168, .13); }
     /* Results */
     #result-panel { background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
     #run-header { padding: 10px 12px 4px; font-size: 12px; color: var(--muted); }
@@ -155,7 +175,13 @@
       <button id="btn-save">Guardar</button>
       <button id="btn-run" class="primary">Resolver ▶</button>
     </div>
-    <textarea id="editor" wrap="off" spellcheck="false" placeholder="var x >= 0;&#10;var y >= 0;&#10;&#10;maximize z: x + 2*y;&#10;&#10;s.t. r: x + y &lt;= 4;&#10;&#10;end;"></textarea>
+    <div class="editor-wrap">
+      <div id="gutter" aria-hidden="true"></div>
+      <div class="code-area">
+        <pre id="highlight" aria-hidden="true"></pre>
+        <textarea id="editor" wrap="off" spellcheck="false" placeholder="var x >= 0;&#10;var y >= 0;&#10;&#10;maximize z: x + 2*y;&#10;&#10;s.t. r: x + y &lt;= 4;&#10;&#10;end;"></textarea>
+      </div>
+    </div>
   </main>
 
   <div id="drag-handle" title="Arrastrá para ajustar · doble clic reinicia"></div>
@@ -186,6 +212,88 @@
     let currentTab = 'solution';
     let lastRun = null;
     let currentRunKey = null; // '${model}|${raw}' of the run shown in the results panel
+    let currentErrorLine = null; // 1-based line of the last glpsol syntax error
+
+    // --- syntax highlight overlay + line numbers ---
+    const KW_RE = /s\.t\.|\b(var|param|set|minimize|maximize|subject|to|end|data|sum|forall|in|if|then|else|and|or|not|check|display|printf|solve|table|integer|binary|by|div|mod|less|default)\b/g;
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Mini tokenizer: /* */ block comments (with state across lines), # line
+    // comments, and "strings" win over keywords/numbers inside them.
+    function tokenizeLine(line, state) {
+      const segs = []; // {t: 'c'ode | 'm' comment | 's'tring, s: text}
+      let i = 0, buf = '';
+      const flush = () => { if (buf) { push('c', buf); buf = ''; } };
+      const push = (t, s) => {
+        const last = segs[segs.length - 1];
+        if (last && last.t === t) last.s += s; else segs.push({ t, s });
+      };
+      while (i < line.length) {
+        if (state.inBlock) {
+          const end = line.indexOf('*/', i);
+          if (end === -1) { push('m', line.slice(i)); i = line.length; }
+          else { push('m', line.slice(i, end + 2)); i = end + 2; state.inBlock = false; }
+        } else if (line[i] === '#') {
+          flush(); push('m', line.slice(i)); i = line.length;
+        } else if (line[i] === '/' && line[i + 1] === '*') {
+          flush(); push('m', '/*'); i += 2; state.inBlock = true;
+        } else if (line[i] === '"') {
+          flush();
+          const close = line.indexOf('"', i + 1);
+          if (close === -1) { push('s', line.slice(i)); i = line.length; }
+          else { push('s', line.slice(i, close + 1)); i = close + 1; }
+        } else {
+          buf += line[i]; i++;
+        }
+      }
+      flush();
+      return segs;
+    }
+
+    function hlCode(text) {
+      return esc(text)
+        .replace(/\b\d+(\.\d+)?\b/g, '<span class="num">$&</span>')
+        .replace(KW_RE, '<span class="kw">$&</span>');
+    }
+
+    function hlLine(line, state) {
+      return tokenizeLine(line, state)
+        .map(seg => seg.t === 'c' ? hlCode(seg.s) : `<span class="${seg.t === 'm' ? 'cm' : 'str'}">${esc(seg.s)}</span>`)
+        .join('');
+    }
+
+    function refreshEditor() {
+      const lines = $('editor').value.split('\n');
+      const gutter = $('gutter');
+      gutter.innerHTML = '';
+      lines.forEach((_, i) => {
+        const d = document.createElement('div');
+        d.className = 'ln' + (currentErrorLine === i + 1 ? ' err' : '');
+        d.textContent = i + 1;
+        gutter.appendChild(d);
+      });
+      const state = { inBlock: false };
+      $('highlight').innerHTML = lines
+        .map((l, i) => {
+          const inner = hlLine(l, state);
+          return currentErrorLine === i + 1 ? `<span class="lnerr">${inner}</span>` : inner;
+        })
+        .join('\n') + '\n';
+      syncScroll();
+    }
+
+    function syncScroll() {
+      const e = $('editor');
+      $('highlight').scrollTop = e.scrollTop;
+      $('highlight').scrollLeft = e.scrollLeft;
+      $('gutter').scrollTop = e.scrollTop;
+    }
+
+    function setTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      currentTab = name;
+      render();
+    }
 
     // --- sidebar lists: executions (by run time) + files (by creation date) ---
     async function loadModels() {
@@ -240,6 +348,9 @@
       run.exit_code = null;
       lastRun = run;
       currentRunKey = `${model}|${raw}`;
+      currentErrorLine = run.error_line ?? null;
+      if (currentErrorLine) setTab('log');
+      refreshEditor();
       render();
       loadModels();
     }
@@ -247,9 +358,11 @@
     function clearResults() {
       lastRun = null;
       currentRunKey = null;
+      currentErrorLine = null;
       $('result-body').textContent = '— sin resultados todavía —';
       $('status-line').innerHTML = '';
       $('run-header').textContent = '';
+      refreshEditor();
     }
 
     async function openModel(name) {
@@ -260,6 +373,9 @@
       const model = await res.json();
       $('model-name').value = model.name;
       $('editor').value = model.content;
+      currentErrorLine = model.last_run?.error_line ?? null;
+      if (currentErrorLine) setTab('log');
+      refreshEditor();
       if (model.last_run) {
         lastRun = model.last_run;
         currentRunKey = `${model.name}|${model.last_run.raw}`;
@@ -329,6 +445,13 @@
         if (!res.ok) { alert((await res.json()).detail || 'Error al ejecutar'); return; }
         lastRun = await res.json();
         currentRunKey = `${name}|${lastRun.raw}`;
+        currentErrorLine = lastRun.error_line ?? null;
+        if (currentErrorLine) {
+          setTab('log');
+          // bring the offending line into view (line-height is a fixed 20px)
+          $('editor').scrollTop = Math.max(0, (currentErrorLine - 3) * 20);
+        }
+        refreshEditor();
         render();
         loadModels();
       } finally {
@@ -352,18 +475,15 @@
         span.textContent = `✓ exit 0 · ${lastRun.solution_file}`;
       } else {
         span.className = 'exit-err';
-        span.textContent = `✗ exit ${lastRun.exit_code} — revisá el log, suele ser error de sintaxis`;
+        span.textContent = lastRun.error_line
+          ? `✗ exit ${lastRun.exit_code} · línea ${lastRun.error_line}: ${lastRun.error_msg || 'error de sintaxis'}`
+          : `✗ exit ${lastRun.exit_code} — revisá el log, suele ser error de sintaxis`;
       }
       line.appendChild(span);
     }
 
     document.querySelectorAll('.tab').forEach(tab => {
-      tab.onclick = () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        currentTab = tab.dataset.tab;
-        render();
-      };
+      tab.onclick = () => setTab(tab.dataset.tab);
     });
 
     // --- guide ---
@@ -411,9 +531,15 @@
         const { selectionStart: s, selectionEnd: end, value } = e.target;
         e.target.value = value.slice(0, s) + '    ' + value.slice(end);
         e.target.selectionStart = e.target.selectionEnd = s + 4;
+        refreshEditor();
       }
     });
 
+    // overlay: recolor on edit, keep scroll positions in sync
+    $('editor').addEventListener('input', refreshEditor);
+    $('editor').addEventListener('scroll', syncScroll);
+
+    refreshEditor();
     loadModels();
   </script>
 </body>

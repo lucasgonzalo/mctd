@@ -94,7 +94,7 @@ docker compose up -d --build
 
 # frenar
 docker compose down</pre>
-    <p class="note">Si el 8000 está ocupado, Docker usa el primer puerto libre del 8000–8005; verificá cuál tomó con <code>docker compose ps</code>.</p>
+    <p class="note">Si el puerto 8000 está ocupado en tu máquina, cambiá el mapeo en <code>compose.yaml</code> por otro (por ejemplo <code>"8010:8000"</code>).</p>
   </div>
 </body>
 </html>
