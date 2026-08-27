@@ -12,3 +12,6 @@ docker compose up -d --build
 docker compose down
 
 Si el puerto 8000 está ocupado en tu máquina, cambiá el mapeo en compose.yaml por otro (por ejemplo "8010:8000").
+
+
+![Vista previa del proyecto](image.png)
