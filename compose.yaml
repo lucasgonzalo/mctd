@@ -4,6 +4,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # persist models & results on the host, outside the container
+      # persist models, results & config on the host, outside the container
       - ./models:/app/models
       - ./results:/app/results
+      - ./config:/app/config

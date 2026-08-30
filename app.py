@@ -5,6 +5,8 @@ Endpoints:
     GET  /api/models         -> list saved .mod files
     GET  /api/models/{name}  -> read one model content
     POST /api/models         -> save {name, content} to models/{name}.mod
+    GET  /api/config         -> current configuration (file merged over defaults)
+    PUT  /api/config         -> validate + persist config/config.json
     POST /api/run            -> run glpsol on a model, return solution + log
 """
 
@@ -22,13 +24,13 @@ BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 RESULTS_DIR = BASE_DIR / "results"
 META_DIR = MODELS_DIR / ".meta"
+CONFIG_DIR = BASE_DIR / "config"
+CONFIG_PATH = CONFIG_DIR / "config.json"
 GLPSOL = "glpsol"
-TIMEOUT_SECONDS = 30
-RUNS_PER_MODEL = 5  # circular history: oldest runs beyond this are pruned
 
 # Safe file names only: letters, digits, underscore, dash. No paths, no dots.
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-RUN_FILE_RE = re.compile(r"^(?P<model>.+)-(?P<stamp>\d{8}-\d{6})\.(?P<ext>txt|log)$")
+RUN_FILE_RE = re.compile(r"^(?P<model>.+)-(?P<stamp>\d{8}-\d{6})\.(?P<ext>txt|log|sol|rng)$")
 STAMP_RE = re.compile(r"^\d{8}-\d{6}$")
 # glpsol reports parse errors as "path/to/model.mod:<line>: <message>"
 ERROR_LINE_RE = re.compile(r"^\S*\.mod:(\d+):(.*)$", re.MULTILINE)
@@ -36,6 +38,7 @@ ERROR_LINE_RE = re.compile(r"^\S*\.mod:(\d+):(.*)$", re.MULTILINE)
 MODELS_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
 META_DIR.mkdir(exist_ok=True)
+CONFIG_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="mctd-glpsol")
 
@@ -50,12 +53,180 @@ def validate_name(name: str) -> str:
     return name
 
 
+# --- configuration (docs/req_1.md) ---
+
+DEFAULT_CONFIG = {
+    "solver": {
+        "method": "simplex",          # simplex | interior
+        "simplex_variant": "primal",  # primal | dual (simplex only)
+        "presolve": True,
+        "exact_check": False,
+        "seed": None,                 # MathProg RNG seed; None = don't pass --seed
+        "tmlim": 25,                  # soft limit: glpsol returns best solution so far
+        "memlim": None,               # MB; None = unlimited
+    },
+    "mip": {
+        "relax": False,               # --nomip: solve MIP as relaxed LP
+        "mipgap": None,               # relative optimality gap; None = GLPK default
+        "cuts": False,                # Gomory + MIR + cover + clique cuts
+    },
+    "output": {
+        "sensitivity": True,          # --ranges report (simplex only, see validate)
+        "plain_solution": True,       # -w plain-text solution artifact
+        "mode": "pretty",             # raw | pretty | both
+    },
+    "runtime": {
+        "timeout_seconds": 30,        # hard subprocess kill; must beat tmlim by 5s
+        "runs_per_model": 5,          # circular history; 0 = unlimited
+    },
+    "editor": {
+        "template": "var x >= 0;\nvar y >= 0;\n\nmaximize z: x + 2*y;\n\ns.t. r: x + y <= 4;\n\nend;",
+    },
+}
+
+EDITOR_TEMPLATE_FALLBACK = "var x >= 0;\nvar y >= 0;\n\nmaximize z: x + 2*y;\n\ns.t. r: x + y <= 4;\n\nend;"
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """Merge override onto base; unknown keys in override are dropped."""
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = deep_merge(out[k], v)
+        elif k in out:
+            out[k] = v
+    return out
+
+
+def load_config() -> dict:
+    """Current config: file merged over defaults. Missing/corrupt file -> defaults."""
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    cfg = deep_merge(DEFAULT_CONFIG, data)
+    if not cfg["editor"].get("template"):
+        cfg["editor"]["template"] = EDITOR_TEMPLATE_FALLBACK
+    return cfg
+
+
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _unknown_keys(ref: dict, got: dict, prefix: str = "") -> list:
+    """Schema keys present in `got` but not in `ref`, as 'a.b' strings."""
+    unknown = []
+    for k, v in got.items():
+        if k not in ref:
+            unknown.append(f"{prefix}{k}")
+        elif isinstance(ref.get(k), dict) and isinstance(v, dict):
+            unknown += _unknown_keys(ref[k], v, f"{prefix}{k}.")
+    return unknown
+
+
+def validate_config(cfg: dict) -> dict:
+    """Field errors keyed 'section.key' with user-facing Spanish messages."""
+    errors = {}
+    s, m, o, r = cfg["solver"], cfg["mip"], cfg["output"], cfg["runtime"]
+
+    if s["method"] not in ("simplex", "interior"):
+        errors["solver.method"] = "Debe ser 'simplex' o 'interior'."
+    if s["simplex_variant"] not in ("primal", "dual"):
+        errors["solver.simplex_variant"] = "Debe ser 'primal' o 'dual'."
+    if not isinstance(s["presolve"], bool):
+        errors["solver.presolve"] = "Debe ser verdadero o falso."
+    if not isinstance(s["exact_check"], bool):
+        errors["solver.exact_check"] = "Debe ser verdadero o falso."
+    if s["seed"] is not None and (not _is_int(s["seed"]) or s["seed"] < 0):
+        errors["solver.seed"] = "Debe ser un entero >= 0 o vacío."
+    if not _is_int(s["tmlim"]) or s["tmlim"] < 1:
+        errors["solver.tmlim"] = "Debe ser un entero >= 1 (segundos)."
+    if s["memlim"] is not None and (not _is_int(s["memlim"]) or s["memlim"] < 1):
+        errors["solver.memlim"] = "Debe ser un entero >= 1 (MB) o vacío."
+
+    if not isinstance(m["relax"], bool):
+        errors["mip.relax"] = "Debe ser verdadero o falso."
+    if not isinstance(m["cuts"], bool):
+        errors["mip.cuts"] = "Debe ser verdadero o falso."
+    if m["mipgap"] is not None and (not _is_num(m["mipgap"]) or m["mipgap"] <= 0):
+        errors["mip.mipgap"] = "Debe ser un número > 0 o vacío."
+
+    if not isinstance(o["sensitivity"], bool):
+        errors["output.sensitivity"] = "Debe ser verdadero o falso."
+    if not isinstance(o["plain_solution"], bool):
+        errors["output.plain_solution"] = "Debe ser verdadero o falso."
+    if o["mode"] not in ("raw", "pretty", "both"):
+        errors["output.mode"] = "Debe ser 'raw', 'pretty' o 'both'."
+
+    if not _is_int(r["timeout_seconds"]) or not 5 <= r["timeout_seconds"] <= 600:
+        errors["runtime.timeout_seconds"] = "Debe estar entre 5 y 600 segundos."
+    if not _is_int(r["runs_per_model"]) or r["runs_per_model"] < 0:
+        errors["runtime.runs_per_model"] = "Debe ser un entero >= 0 (0 = ilimitado)."
+
+    # Cross rules
+    if s["method"] == "interior" and o["sensitivity"] and "solver.method" not in errors:
+        errors["output.sensitivity"] = (
+            "El análisis de sensibilidad solo está disponible con el método simplex."
+        )
+    if (
+        _is_int(s["tmlim"])
+        and _is_int(r["timeout_seconds"])
+        and s["tmlim"] + 5 > r["timeout_seconds"]
+    ):
+        errors["solver.tmlim"] = (
+            "El límite blando debe ser al menos 5 segundos menor que el límite "
+            "duro (timeout)."
+        )
+    return errors
+
+
+def build_argv(cfg: dict, model_path: Path, out_file: Path, sol_file: Path,
+               rng_file: Path, log_file: Path) -> list:
+    """Translate config into the glpsol argv. Validation already ran, so the
+    interior+sensitivity combination cannot reach here."""
+    s, mip, out = cfg["solver"], cfg["mip"], cfg["output"]
+    argv = [GLPSOL, "--model", str(model_path)]
+    if s["method"] == "interior":
+        argv.append("--interior")
+    elif s["simplex_variant"] == "dual":
+        argv.append("--dual")
+    if not s["presolve"]:
+        argv.append("--nopresol")
+    if s["exact_check"]:
+        argv.append("--xcheck")
+    if s["seed"] is not None:
+        argv += ["--seed", str(s["seed"])]
+    if s["memlim"] is not None:
+        argv += ["--memlim", str(s["memlim"])]
+    argv += ["--tmlim", str(s["tmlim"])]
+    if mip["relax"]:
+        argv.append("--nomip")
+    if mip["mipgap"] is not None:
+        argv += ["--mipgap", str(mip["mipgap"])]
+    if mip["cuts"]:
+        argv.append("--cuts")
+    argv += ["--output", str(out_file)]
+    if out["plain_solution"]:
+        argv += ["-w", str(sol_file)]
+    if out["sensitivity"]:
+        argv += ["--ranges", str(rng_file)]
+    argv += ["--log", str(log_file)]
+    return argv
+
+
 def run_files_for(name: str) -> dict:
     """Group result files by run stamp: {stamp: {'txt': path, 'log': path}}.
 
     The strict timestamp suffix keeps 'tp' from matching 'tp-1' runs.
     """
-    pattern = re.compile(rf"^{re.escape(name)}-(\d{{8}}-\d{{6}})\.(txt|log)$")
+    pattern = re.compile(rf"^{re.escape(name)}-(\d{{8}}-\d{{6}})\.(txt|log|sol|rng)$")
     runs: dict = {}
     if RESULTS_DIR.is_dir():
         for f in RESULTS_DIR.iterdir():
@@ -119,7 +290,7 @@ def all_runs(limit: int = 10) -> list:
     return [{"model": model, "raw": raw, "stamp": fmt_stamp(raw)} for (model, raw), _ in ranked]
 
 
-def prune_runs(name: str, keep: int = RUNS_PER_MODEL) -> int:
+def prune_runs(name: str, keep: int) -> int:
     """Circular history per model: keep the newest `keep` runs, delete the rest.
 
     Fixed-width stamps sort chronologically as plain strings.
@@ -158,6 +329,19 @@ def list_runs():
     return all_runs(10)
 
 
+@app.get("/api/runs/{name}")
+def list_model_runs(name: str):
+    """Runs of one model, newest first (sidebar view when a model is selected)."""
+    validate_name(name)
+    if not (MODELS_DIR / f"{name}.mod").exists():
+        raise HTTPException(status_code=404, detail="Model not found")
+    runs = run_files_for(name)
+    return [
+        {"model": name, "raw": raw, "stamp": fmt_stamp(raw)}
+        for raw in sorted(runs, reverse=True)[:20]
+    ]
+
+
 @app.get("/api/runs/{name}/{raw}")
 def get_run(name: str, raw: str):
     validate_name(name)
@@ -165,12 +349,16 @@ def get_run(name: str, raw: str):
         raise HTTPException(status_code=400, detail="Invalid run stamp")
     txt = RESULTS_DIR / f"{name}-{raw}.txt"
     log = RESULTS_DIR / f"{name}-{raw}.log"
+    sol = RESULTS_DIR / f"{name}-{raw}.sol"
+    rng = RESULTS_DIR / f"{name}-{raw}.rng"
     if not txt.exists() and not log.exists():
         raise HTTPException(status_code=404, detail="Run not found")
     return {
         "model": name,
         "stamp": fmt_stamp(raw),
         "solution": txt.read_text(encoding="utf-8", errors="replace") if txt.exists() else "",
+        "sol": sol.read_text(encoding="utf-8", errors="replace") if sol.exists() else "",
+        "ranges": rng.read_text(encoding="utf-8", errors="replace") if rng.exists() else "",
         "log": log.read_text(encoding="utf-8", errors="replace") if log.exists() else "",
     }
 
@@ -188,12 +376,15 @@ def get_model(name: str):
         stamp = max(runs)  # fixed-width stamps sort chronologically
         pair = runs[stamp]
         txt, log = pair.get("txt"), pair.get("log")
+        sol, rng = pair.get("sol"), pair.get("rng")
         last_run = {
             "exit_code": None,  # not persisted; status line renders as restored run
             "stamp": fmt_stamp(stamp),
             "raw": stamp,
             "model": name,
             "solution": txt.read_text(encoding="utf-8", errors="replace") if txt and txt.exists() else "",
+            "sol": sol.read_text(encoding="utf-8", errors="replace") if sol and sol.exists() else "",
+            "ranges": rng.read_text(encoding="utf-8", errors="replace") if rng and rng.exists() else "",
             "log": log.read_text(encoding="utf-8", errors="replace") if log and log.exists() else "",
             "solution_file": txt.name if txt else None,
         }
@@ -237,6 +428,32 @@ def save_model(payload: dict):
     return {"status": "saved", "name": name}
 
 
+@app.get("/api/config")
+def get_config():
+    return load_config()
+
+
+@app.put("/api/config")
+def put_config(payload: dict):
+    unknown = _unknown_keys(DEFAULT_CONFIG, payload or {})
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail={"errors": {"_": f"Claves desconocidas: {', '.join(sorted(unknown))}"}},
+        )
+    cfg = deep_merge(DEFAULT_CONFIG, payload or {})
+    if not cfg["editor"].get("template"):
+        cfg["editor"]["template"] = EDITOR_TEMPLATE_FALLBACK
+    errors = validate_config(cfg)
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    CONFIG_DIR.mkdir(exist_ok=True)
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(CONFIG_PATH)  # atomic: readers never see a half-written file
+    return cfg
+
+
 @app.post("/api/run")
 def run_model(payload: dict):
     name = validate_name(payload.get("name", ""))
@@ -244,23 +461,31 @@ def run_model(payload: dict):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Model not found - save it first")
 
+    cfg = load_config()  # read fresh: applies config changes without a restart
+    timeout = cfg["runtime"]["timeout_seconds"]
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_file = RESULTS_DIR / f"{name}-{stamp}.txt"
+    sol_file = RESULTS_DIR / f"{name}-{stamp}.sol"
+    rng_file = RESULTS_DIR / f"{name}-{stamp}.rng"
     log_file = RESULTS_DIR / f"{name}-{stamp}.log"
+    argv = build_argv(cfg, path, out_file, sol_file, rng_file, log_file)
 
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, shell disabled
-            [GLPSOL, "--model", str(path), "--output", str(out_file), "--log", str(log_file)],
+            argv,
             capture_output=True,
             text=True,
-            timeout=TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail=f"glpsol timed out after {TIMEOUT_SECONDS}s")
+        raise HTTPException(status_code=504, detail=f"glpsol timed out after {timeout}s")
 
     solution = out_file.read_text(encoding="utf-8", errors="replace") if out_file.exists() else ""
+    sol = sol_file.read_text(encoding="utf-8", errors="replace") if sol_file.exists() else ""
+    ranges = rng_file.read_text(encoding="utf-8", errors="replace") if rng_file.exists() else ""
     log = log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else ""
-    pruned = prune_runs(name)
+    pruned = prune_runs(name, keep=cfg["runtime"]["runs_per_model"])
     err_line, err_msg = parse_glpk_error(log)
 
     return {
@@ -269,9 +494,12 @@ def run_model(payload: dict):
         "raw": stamp,
         "model": name,
         "solution": solution,
+        "sol": sol,
+        "ranges": ranges,
         "log": log,
         "solution_file": out_file.name,
         "log_file": log_file.name,
+        "command": argv,
         "pruned_runs": pruned,
         "error_line": err_line,
         "error_msg": err_msg,

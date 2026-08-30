@@ -30,7 +30,8 @@
       font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
       color: var(--muted); margin: 6px 0; font-weight: 600;
     }
-    #runs-section { flex: 0 1 auto; max-height: 38%; }
+    /* Fixed height: switching models with different run counts must not move the layout */
+    #runs-section { flex: 0 0 30%; }
     #runs-list { overflow-y: auto; min-height: 0; }
     #files-section { flex: 1; }
     #model-list { flex: 1; overflow-y: auto; min-height: 0; }
@@ -139,6 +140,83 @@
     #modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
     button.danger { background: var(--err); color: #1e1e2e; font-weight: 600; border: none; }
 
+    /* Tooltip: "?" icon that reveals its text on hover.
+       Anchored to the RIGHT of the icon: the modal scrolls (overflow-y: auto),
+       which clips anything placed above/below, but the icon sits on the label
+       column so there is always room to the right inside the modal. */
+    .tip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 15px; height: 15px; margin-left: 5px; flex-shrink: 0;
+      border: 1px solid var(--muted); border-radius: 50%;
+      color: var(--muted); font-size: 10px; line-height: 1;
+      cursor: help; position: relative; vertical-align: middle;
+    }
+    .tip:hover { color: var(--accent); border-color: var(--accent); }
+    .tip::after {
+      content: attr(data-tip); position: absolute; left: calc(100% + 8px); top: 50%;
+      transform: translateY(-50%); width: 245px; padding: 8px 10px;
+      background: #11111b; border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-size: 11.5px; line-height: 1.45; text-align: left;
+      white-space: normal; opacity: 0; pointer-events: none;
+      transition: opacity .12s; z-index: 60;
+    }
+    .tip:hover::after { opacity: 1; }
+    /* Narrow windows: no room to the right of the label, drop below instead */
+    @media (max-width: 640px) {
+      .tip::after { left: auto; right: 0; top: calc(100% + 7px); transform: none; width: 210px; }
+    }
+
+    /* Settings modal */
+    #config-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
+      display: none; align-items: center; justify-content: center; z-index: 20;
+    }
+    #config-overlay.open { display: flex; }
+    #config-modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 20px; width: 92%; max-width: 580px; max-height: 86vh; overflow-y: auto;
+    }
+    #config-modal h2 { font-size: 15px; margin-bottom: 4px; }
+    .cfg-sub { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+    .cfg-group h3 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--accent); margin: 16px 0 4px; font-weight: 600;
+    }
+    .cfg-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 7px 0; border-bottom: 1px solid rgba(69, 71, 90, .35);
+    }
+    .cfg-row.err .cfg-name, .cfg-row.err .tip { color: var(--err); }
+    .cfg-name { font-size: 13px; display: flex; align-items: center; }
+    .cfg-row input, .cfg-row select, .cfg-row textarea {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 8px; color: var(--text); font-size: 13px;
+      font-family: inherit;
+    }
+    .cfg-row input[type="number"], .cfg-row select { width: 180px; flex-shrink: 0; }
+    .cfg-row textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12.5px; }
+    .cfg-row input:focus, .cfg-row select:focus, .cfg-row textarea:focus { outline: 1px solid var(--accent); }
+    .cfg-row.err input, .cfg-row.err select, .cfg-row.err textarea { border-color: var(--err); }
+    #config-error { margin-bottom: 4px; }
+    .cfg-err-msg { color: var(--err); font-size: 12px; margin: 3px 0; }
+    #config-modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+    /* Pretty solution tables */
+    #result-body.pretty { white-space: normal; }
+    .sol-info { font-size: 12.5px; line-height: 1.6; margin-bottom: 6px; }
+    .sol-info .k { color: var(--muted); }
+    #result-body h3 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--accent); margin: 14px 0 6px; font-weight: 600;
+    }
+    table.sol-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    .sol-table th, .sol-table td {
+      border-bottom: 1px solid var(--border); padding: 4px 8px;
+      text-align: left; font-family: ui-monospace, monospace; white-space: nowrap;
+    }
+    .sol-table th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+    .sol-table td:nth-child(n+3), .sol-table th:nth-child(n+3) { text-align: right; }
+
     /* Narrow screens: results panel moves below the editor */
     @media (max-width: 1150px) {
       body { grid-template-columns: var(--sidebar-w, 230px) 1fr; grid-template-rows: minmax(0, 1fr) 38vh; }
@@ -172,6 +250,7 @@
   <main>
     <div class="toolbar">
       <input id="model-name" placeholder="nombre_del_modelo" spellcheck="false">
+      <button id="btn-config" title="Configuración">⚙</button>
       <button id="btn-save">Guardar</button>
       <button id="btn-run" class="primary">Resolver ▶</button>
     </div>
@@ -207,12 +286,152 @@
     </div>
   </div>
 
+  <div id="config-overlay">
+    <div id="config-modal">
+      <h2>Configuración</h2>
+      <div class="cfg-sub">Defaults globales: aplican a todas las ejecuciones desde el próximo run. Pasá el cursor por cada <span class="tip" style="margin:0">?</span> para ver qué hace la opción.</div>
+      <div id="config-error"></div>
+
+      <div class="cfg-group">
+        <h3>Solver</h3>
+        <label class="cfg-row">
+          <span class="cfg-name">Método
+            <span class="tip" data-tip="Algoritmo de resolución. Simplex es el estándar de GLPK. El punto interior solo aplica a problemas lineales continuos (LP), no a enteros.">?</span>
+          </span>
+          <select data-cfg="solver.method">
+            <option value="simplex">Simplex</option>
+            <option value="interior">Punto interior (solo LP)</option>
+          </select>
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Variante simplex
+            <span class="tip" data-tip="Versión del algoritmo simplex: primal (por defecto) o dual. El dual puede converger más rápido en problemas con muchas variables o cuando ya se tiene una base dual factible.">?</span>
+          </span>
+          <select data-cfg="solver.simplex_variant">
+            <option value="primal">Primal</option>
+            <option value="dual">Dual</option>
+          </select>
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Presolve
+            <span class="tip" data-tip="Simplifica el problema antes de resolverlo: elimina variables y filas redundantes, detecta inviabilidad temprano. Casi siempre acelera; desactivalo solo para debuggear el modelo original.">?</span>
+          </span>
+          <input type="checkbox" data-cfg="solver.presolve">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Chequeo exacto
+            <span class="tip" data-tip="Verifica la solución final con aritmética exacta (--xcheck). Más lento; útil para confirmar resultados dudosos por redondeo de punto flotante.">?</span>
+          </span>
+          <input type="checkbox" data-cfg="solver.exact_check">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Semilla (seed)
+            <span class="tip" data-tip="Semilla del generador aleatorio de MathProg (para Uniform, Normal, etc. en el modelo). Fijarla hace los resultados reproducibles entre ejecuciones. Vacío = no fijar.">?</span>
+          </span>
+          <input type="number" min="0" step="1" placeholder="vacío = aleatoria" data-cfg="solver.seed">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Límite blando (s)
+            <span class="tip" data-tip="Tiempo máximo de resolución en segundos (--tmlim): al llegar al límite, glpsol corta y devuelve la mejor solución encontrada hasta ahí, con su estado.">?</span>
+          </span>
+          <input type="number" min="1" step="1" data-cfg="solver.tmlim">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Límite memoria (MB)
+            <span class="tip" data-tip="Memoria máxima disponible para el solver (--memlim). Útil en máquinas compartidas. Vacío = sin límite.">?</span>
+          </span>
+          <input type="number" min="1" step="1" placeholder="vacío = sin límite" data-cfg="solver.memlim">
+        </label>
+      </div>
+
+      <div class="cfg-group">
+        <h3>Enteros (MIP)</h3>
+        <label class="cfg-row">
+          <span class="cfg-name">Relajar (LP)
+            <span class="tip" data-tip="Trata las variables enteras como continuas (--nomip): resuelve el MIP como LP relajado. Da la cota relajada del problema, útil para comparar con el óptimo entero.">?</span>
+          </span>
+          <input type="checkbox" data-cfg="mip.relax">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Gap MIP
+            <span class="tip" data-tip="Gap de optimalidad relativo (--mipgap): permite detener la búsqueda cuando la mejor solución encontrada está a esta distancia fraccionaria del óptimo. Ej: 0.05 = hasta 5% de holgura. Vacío = default de GLPK.">?</span>
+          </span>
+          <input type="number" min="0" step="any" placeholder="vacío = default" data-cfg="mip.mipgap">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Cortes (cuts)
+            <span class="tip" data-tip="Agrega cortes al árbol de búsqueda (Gomory, MIR, cover, clique). Puede podar mucho más rápido en problemas enteros difíciles, a costa de tiempo extra por nodo.">?</span>
+          </span>
+          <input type="checkbox" data-cfg="mip.cuts">
+        </label>
+      </div>
+
+      <div class="cfg-group">
+        <h3>Salida</h3>
+        <label class="cfg-row">
+          <span class="cfg-name">Análisis de sensibilidad
+            <span class="tip" data-tip="Genera el reporte de sensibilidad (--ranges): cuánto pueden cambiar los coeficientes objetivo y los términos independientes sin que cambie la base óptima. Solo disponible con el método simplex.">?</span>
+          </span>
+          <input type="checkbox" data-cfg="output.sensitivity">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Solución plana (-w)
+            <span class="tip" data-tip="Guarda también la solución en formato plano machine-readable (.sol), útil para procesarla con scripts u otras herramientas.">?</span>
+          </span>
+          <input type="checkbox" data-cfg="output.plain_solution">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Modo de vista
+            <span class="tip" data-tip="Cómo se muestran los resultados: tablas (parseado y formateado, con nombres de variables y restricciones), crudo (texto plano como sale de glpsol) o ambos.">?</span>
+          </span>
+          <select data-cfg="output.mode">
+            <option value="pretty">Tablas (bonito)</option>
+            <option value="raw">Crudo</option>
+            <option value="both">Ambos</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="cfg-group">
+        <h3>Ejecución</h3>
+        <label class="cfg-row">
+          <span class="cfg-name">Límite duro (s)
+            <span class="tip" data-tip="Tiempo máximo del proceso antes de matarlo de raíz (timeout del subprocess). Debe superar al límite blando para que glpsol pueda escribir su solución parcial. Entre 5 y 600 segundos.">?</span>
+          </span>
+          <input type="number" min="5" max="600" step="1" data-cfg="runtime.timeout_seconds">
+        </label>
+        <label class="cfg-row">
+          <span class="cfg-name">Ejecuciones a guardar
+            <span class="tip" data-tip="Cuántas ejecuciones se conservan por modelo (historial circular: las más viejas se borran). 0 = ilimitado.">?</span>
+          </span>
+          <input type="number" min="0" step="1" data-cfg="runtime.runs_per_model">
+        </label>
+      </div>
+
+      <div class="cfg-group">
+        <h3>Editor</h3>
+        <label class="cfg-row" style="display:block">
+          <span class="cfg-name">Plantilla de modelo nuevo
+            <span class="tip" data-tip="Contenido inicial que se carga en el editor al crear un modelo nuevo.">?</span>
+          </span>
+          <textarea data-cfg="editor.template" rows="5" spellcheck="false"></textarea>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="config-cancel">Cancelar</button>
+        <button id="config-save" class="primary">Guardar</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const $ = (id) => document.getElementById(id);
     let currentTab = 'solution';
     let lastRun = null;
     let currentRunKey = null; // '${model}|${raw}' of the run shown in the results panel
     let currentErrorLine = null; // 1-based line of the last glpsol syntax error
+    let appConfig = null; // global config, fetched from /api/config
 
     // --- syntax highlight overlay + line numbers ---
     const KW_RE = /s\.t\.|\b(var|param|set|minimize|maximize|subject|to|end|data|sum|forall|in|if|then|else|and|or|not|check|display|printf|solve|table|integer|binary|by|div|mod|less|default)\b/g;
@@ -295,11 +514,253 @@
       render();
     }
 
-    // --- sidebar lists: executions (by run time) + files (by creation date) ---
+    // --- pretty rendering: parse glpsol's printable solution (.txt) ---
+    // The report is column-aligned; the dashed separator line under each
+    // header gives the exact column boundaries, so we slice instead of
+    // split (names may contain spaces). LP tables carry St + Marginal
+    // columns; MIP tables don't - the parser adapts to whatever is there.
+    const ST_LP = { B: 'básica', BS: 'básica', NL: 'cota inf.', NU: 'cota sup.', NF: 'libre', NS: 'fija' };
+
+    function colBounds(dashLine) {
+      const cols = [];
+      const re = /-+/g;
+      let m;
+      while ((m = re.exec(dashLine))) cols.push({ start: m.index, end: m.index + m[0].length });
+      return cols;
+    }
+
+    function parseSolution(txt) {
+      if (!txt) return null;
+      const lines = txt.split('\n');
+      const info = {};
+      for (const l of lines) {
+        const m = l.match(/^(Problem|Rows|Columns|Non-zeros|Status|Objective):\s+(.*)$/);
+        if (!m) break;
+        info[m[1]] = m[2].trim();
+      }
+      const sections = [];
+      for (let k = 0; k < lines.length; k++) {
+        if (!/^\s*No\.\s+(Row|Column) name/.test(lines[k])) continue;
+        let dashIdx = -1;
+        for (let d = k + 1; d <= k + 2 && d < lines.length; d++) {
+          if (/^\s*-{3,}(\s+-{2,})+/.test(lines[d])) { dashIdx = d; break; }
+        }
+        if (dashIdx === -1) continue;
+        const bounds = colBounds(lines[dashIdx]);
+        const names = bounds.map(b => (lines[k].slice(b.start, b.end) || '').trim().replace(/\s+/g, ' ') || '?');
+        const rows = [];
+        for (let r = dashIdx + 1; r < lines.length; r++) {
+          if (!/^\s*\d+\s/.test(lines[r])) break;
+          rows.push(bounds.map(b => lines[r].slice(b.start, b.end).trim()));
+          if (rows.length > 5000) break; // paranoia: never freeze the UI on huge models
+        }
+        sections.push({ kind: /Row/.test(lines[k]) ? 'rows' : 'cols', names, rows });
+      }
+      return sections.length ? { info, sections } : null;
+    }
+
+    function renderTables(p, ranges) {
+      let html = '<div class="sol-info">';
+      html += `<div><span class="k">Estado:</span> ${esc(p.info.Status || '?')}</div>`;
+      html += `<div><span class="k">Objetivo:</span> ${esc(p.info.Objective || '?')}</div>`;
+      html += `<div><span class="k">Dimensiones:</span> ${esc((p.info.Rows || '?') + ' filas · ' + (p.info.Columns || '?') + ' columnas')}</div>`;
+      html += '</div>';
+      for (const sec of p.sections) {
+        html += `<h3>${sec.kind === 'rows' ? 'Restricciones' : 'Variables'}</h3>`;
+        html += '<table class="sol-table"><thead><tr>';
+        html += sec.names.map(n => `<th>${esc(n)}</th>`).join('');
+        html += '</tr></thead><tbody>';
+        for (const row of sec.rows) {
+          html += '<tr>' + row.map((c, i) => {
+            const name = sec.names[i];
+            let cell = c;
+            if (name === 'St') cell = ST_LP[c] || (c === '*' ? '* entera' : c);
+            else if (c === '' && name === 'Lower bound') cell = '-∞'; // GLPK omits infinite bounds
+            else if (c === '' && name === 'Upper bound') cell = '+∞';
+            return `<td>${esc(cell)}</td>`;
+          }).join('') + '</tr>';
+        }
+        html += '</tbody></table>';
+      }
+      if (ranges) html += renderRanges(ranges);
+      return html;
+    }
+
+    // --- sensitivity report (.rng): each record spans TWO lines (top/bottom
+    // values per column), sections repeat across pages. Column boundaries
+    // come from the dash separator, same trick as parseSolution. ---
+    function parseRanges(txt) {
+      if (!txt) return null;
+      const lines = txt.split('\n');
+      const sections = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (!/^\s*No\.\s+(Row|Column) name/.test(lines[i])) continue;
+        const dash = lines[i + 2] && /^\s*-{3,}(\s+-{2,})+/.test(lines[i + 2]) ? lines[i + 2] : null;
+        if (!dash) continue;
+        const b = colBounds(dash);
+        if (b.length !== 10) continue; // unexpected layout: skip block, raw tab still has it
+        const kind = /Row/.test(lines[i]) ? 'rows' : 'cols';
+        const rows = [];
+        for (let r = i + 3; r < lines.length; r++) {
+          if (lines[r].trim() === '') continue; // blank separator between records
+          if (!/^\s*\d+\s/.test(lines[r])) break; // page header / report end
+          const top = b.map(x => lines[r].slice(x.start, x.end).trim());
+          const nxt = lines[r + 1] || '';
+          const bot = /^\s*\d+\s/.test(nxt) || nxt.trim() === ''
+            ? b.map(() => '')
+            : b.map(x => nxt.slice(x.start, x.end).trim());
+          rows.push({ top, bot });
+          r++; // the continuation line is part of this record
+        }
+        if (rows.length) sections.push({ kind, rows });
+      }
+      return sections.length ? { sections } : null;
+    }
+
+    // Fixed 10-column layout (verified against glpsol 5.0 --ranges):
+    // 0 No · 1 name · 2 St · 3 activity · 4 slack|objcoef(top) / marginal(bot) ·
+    // 5 lower / upper bound · 6 activity range (min-max) · 7 obj coef range ·
+    // 8 obj value at break point · 9 limiting variable
+    function renderRanges(p) {
+      const table = (kind, title) => {
+        const blocks = p.sections.filter(s => s.kind === kind);
+        if (!blocks.length) return '';
+        let html = `<h3>${title}</h3><table class="sol-table"><thead><tr>` +
+          ['No.', 'Nombre', 'St', 'Actividad', 'Marginal', 'Rango actividad', 'Rango coef. obj.', 'Obj. en quiebre', 'Limitante']
+            .map(n => `<th>${esc(n)}</th>`).join('') + '</tr></thead><tbody>';
+        for (const s of blocks) {
+          for (const row of s.rows) {
+            const t = row.top, b = row.bot;
+            html += '<tr>' + [
+              t[0], t[1], ST_LP[t[2]] || t[2], t[3], b[4],
+              `${t[6]} – ${b[6]}`, `${t[7]} – ${b[7]}`, `${t[8]} · ${b[8]}`, `${t[9]} / ${b[9]}`,
+            ].map(c => `<td>${esc(c)}</td>`).join('') + '</tr>';
+          }
+        }
+        return html + '</tbody></table>';
+      };
+      return '<h3>Análisis de sensibilidad</h3>' +
+        '<div class="sol-info"><div><span class="k">Rangos:</span> intervalo (mín – máx) en el que la base óptima se mantiene sin cambiar.</div></div>' +
+        table('rows', 'Restricciones') + table('cols', 'Variables');
+    }
+
+    // --- dynamic tabs: tables (pretty) / solution (raw) / ranges / log ---
+    const TAB_LABELS = { tables: 'Tablas', solution: 'Solución', ranges: 'Sensibilidad', log: 'Log' };
+
+    function rebuildTabs() {
+      const mode = (appConfig && appConfig.output && appConfig.output.mode) || 'pretty';
+      const parsed = lastRun ? parseSolution(lastRun.solution || '') : null;
+      const tabs = [];
+      if ((mode === 'pretty' || mode === 'both') && parsed) tabs.push('tables');
+      if (mode !== 'pretty' || !parsed) tabs.push('solution');
+      if (lastRun && lastRun.ranges) tabs.push('ranges');
+      tabs.push('log');
+      if (!tabs.includes(currentTab)) currentTab = tabs[0];
+      const bar = document.querySelector('.tabs');
+      bar.innerHTML = '';
+      tabs.forEach(t => {
+        const el = document.createElement('div');
+        el.className = 'tab' + (t === currentTab ? ' active' : '');
+        el.dataset.tab = t;
+        el.textContent = TAB_LABELS[t];
+        el.onclick = () => setTab(t);
+        bar.appendChild(el);
+      });
+      return tabs;
+    }
+
+    // --- settings modal ---
+    const cfgGet = (obj, path) => path.split('.').reduce((o, k) => (o || {})[k], obj);
+    const cfgSet = (obj, path, val) => {
+      const ks = path.split('.');
+      let o = obj;
+      for (let i = 0; i < ks.length - 1; i++) o = o[ks[i]] = o[ks[i]] || {};
+      o[ks[ks.length - 1]] = val;
+    };
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        if (res.ok) appConfig = await res.json();
+      } catch { /* defaults on the server keep working without JS config */ }
+    }
+
+    function fillConfigForm() {
+      document.querySelectorAll('[data-cfg]').forEach(el => {
+        const val = cfgGet(appConfig, el.dataset.cfg);
+        if (el.type === 'checkbox') el.checked = !!val;
+        else el.value = val === null || val === undefined ? '' : val;
+      });
+      $('config-error').innerHTML = '';
+      document.querySelectorAll('.cfg-row.err').forEach(r => r.classList.remove('err'));
+    }
+
+    function collectConfig() {
+      const out = {};
+      document.querySelectorAll('[data-cfg]').forEach(el => {
+        let v;
+        if (el.type === 'checkbox') v = el.checked;
+        else if (el.type === 'number') v = el.value.trim() === '' ? null : Number(el.value);
+        else v = el.value;
+        cfgSet(out, el.dataset.cfg, v);
+      });
+      return out;
+    }
+
+    function showConfigErrors(errors) {
+      const box = $('config-error');
+      box.innerHTML = '';
+      Object.entries(errors).forEach(([k, msg]) => {
+        const div = document.createElement('div');
+        div.className = 'cfg-err-msg';
+        div.textContent = (k === '_' ? '' : k + ': ') + msg;
+        box.appendChild(div);
+        const row = document.querySelector(`[data-cfg="${k}"]`);
+        if (row) row.closest('.cfg-row').classList.add('err');
+      });
+      $('config-modal').scrollTop = 0;
+    }
+
+    function openConfig() {
+      fillConfigForm();
+      $('config-overlay').classList.add('open');
+    }
+    function closeConfig() { $('config-overlay').classList.remove('open'); }
+
+    $('btn-config').onclick = openConfig;
+    $('config-cancel').onclick = closeConfig;
+    $('config-overlay').onclick = (e) => { if (e.target === $('config-overlay')) closeConfig(); };
+    $('config-save').onclick = async () => {
+      const btn = $('config-save');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(collectConfig()),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showConfigErrors(data.detail && data.detail.errors ? data.detail.errors : { _: 'Error al guardar la configuración' });
+          return;
+        }
+        appConfig = data;
+        closeConfig();
+        if (lastRun) render(); // tabs may change with the new output mode
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    // --- sidebar lists: executions of the selected model + files (by creation date) ---
     async function loadModels() {
-      const [modelsRes, runsRes] = await Promise.all([fetch('/api/models'), fetch('/api/runs')]);
+      const selected = $('model-name').value.trim();
+      const [modelsRes, runsRes] = await Promise.all([
+        fetch('/api/models'),
+        selected ? fetch(`/api/runs/${encodeURIComponent(selected)}`) : Promise.resolve(null),
+      ]);
       const models = await modelsRes.json();
-      const runs = await runsRes.json();
+      const runs = runsRes && runsRes.ok ? await runsRes.json() : null; // null = no model selected
 
       models.sort((a, b) => b.created.localeCompare(a.created)); // newest created first, stable across runs
 
@@ -307,7 +768,7 @@
       list.innerHTML = '';
       for (const m of models) {
         const div = document.createElement('div');
-        div.className = 'model-item' + (m.name === $('model-name').value ? ' active' : '');
+        div.className = 'model-item' + (m.name === selected ? ' active' : '');
         const name = document.createElement('span');
         name.className = 'name'; name.textContent = m.name;
         const date = document.createElement('span');
@@ -322,22 +783,26 @@
 
       const rlist = $('runs-list');
       rlist.innerHTML = '';
-      if (!runs.length) {
-        const empty = document.createElement('div');
-        empty.className = 'runs-empty';
+      const empty = document.createElement('div');
+      empty.className = 'runs-empty';
+      if (!selected) {
+        empty.textContent = 'Seleccioná un archivo para ver sus ejecuciones';
+        rlist.appendChild(empty);
+      } else if (!runs || !runs.length) {
         empty.textContent = 'Todavía no hay ejecuciones';
         rlist.appendChild(empty);
-      }
-      for (const r of runs) {
-        const div = document.createElement('div');
-        div.className = 'run-item' + (currentRunKey === `${r.model}|${r.raw}` ? ' active' : '');
-        const name = document.createElement('span');
-        name.className = 'name'; name.textContent = r.model; name.title = r.stamp;
-        const when = document.createElement('span');
-        when.className = 'when'; when.textContent = r.raw.slice(6, 8) + '/' + r.raw.slice(4, 6) + ' ' + r.raw.slice(9, 11) + ':' + r.raw.slice(11, 13);
-        div.append(name, when);
-        div.onclick = () => loadRun(r.model, r.raw);
-        rlist.appendChild(div);
+      } else {
+        for (const r of runs) {
+          const div = document.createElement('div');
+          div.className = 'run-item' + (currentRunKey === `${r.model}|${r.raw}` ? ' active' : '');
+          const name = document.createElement('span');
+          name.className = 'name'; name.textContent = r.model; name.title = r.stamp;
+          const when = document.createElement('span');
+          when.className = 'when'; when.textContent = r.raw.slice(6, 8) + '/' + r.raw.slice(4, 6) + ' ' + r.raw.slice(9, 11) + ':' + r.raw.slice(11, 13);
+          div.append(name, when);
+          div.onclick = () => loadRun(r.model, r.raw);
+          rlist.appendChild(div);
+        }
       }
     }
 
@@ -407,7 +872,7 @@
     // --- actions ---
     $('btn-new').onclick = () => {
       $('model-name').value = '';
-      $('editor').value = '';
+      $('editor').value = (appConfig && appConfig.editor && appConfig.editor.template) || '';
       clearResults();
       $('editor').focus();
       loadModels();
@@ -462,9 +927,23 @@
     // --- results ---
     function render() {
       if (!lastRun) return;
-      $('result-body').textContent = lastRun[currentTab] || '(vacío)';
+      rebuildTabs();
+      const body = $('result-body');
+      if (currentTab === 'tables') {
+        const parsed = parseSolution(lastRun.solution || '');
+        const rangesParsed = parseRanges(lastRun.ranges || '');
+        body.className = 'pretty';
+        let html = parsed ? renderTables(parsed, rangesParsed) : '';
+        if (!parsed && rangesParsed) html = renderRanges(rangesParsed);
+        body.innerHTML = html || '(sin solución parseable)';
+      } else {
+        body.className = '';
+        body.textContent = lastRun[currentTab] || '(vacío)';
+      }
       const who = lastRun.model ? `${lastRun.model} · ` : '';
       $('run-header').textContent = lastRun.stamp ? `${who}Ejecutado: ${lastRun.stamp}` : '';
+      // hover the header to see the exact glpsol invocation used for this run
+      $('run-header').title = lastRun.command ? lastRun.command.join(' ') : '';
       const line = $('status-line');
       line.innerHTML = '';
       const span = document.createElement('span');
@@ -481,10 +960,6 @@
       }
       line.appendChild(span);
     }
-
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.onclick = () => setTab(tab.dataset.tab);
-    });
 
     // --- guide ---
     $('btn-guide').onclick = () => { window.location.href = '/guide'; };
@@ -540,6 +1015,7 @@
     $('editor').addEventListener('scroll', syncScroll);
 
     refreshEditor();
+    loadConfig();
     loadModels();
   </script>
 </body>

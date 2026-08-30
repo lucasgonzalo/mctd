@@ -13,8 +13,10 @@ Thumbs.db
 # Local tooling
 .atl/
 
-# Per-clone data: models & run results belong to each user, not the repo
+# Per-clone data: models, run results & config belong to each user, not the repo
 models/*
 !models/.gitkeep
 results/*
 !results/.gitkeep
+config/*
+!config/.gitkeep

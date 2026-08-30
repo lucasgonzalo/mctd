@@ -70,13 +70,17 @@ end;</pre>
     <h2>¿Dónde se guardan los archivos?</h2>
     <ul>
       <li><code>models/*.mod</code> — tus modelos (se guardan con el botón <em>Guardar</em> o automáticamente al resolver).</li>
-      <li><code>results/{modelo}-{fecha-hora}.txt / .log</code> — solución y log de cada ejecución.</li>
+      <li><code>results/{modelo}-{fecha-hora}.txt / .sol / .rng / .log</code> — solución imprimible, solución plana, reporte de sensibilidad y log de cada ejecución (según configuración).</li>
       <li><code>models/.meta/*.json</code> — fecha de creación de cada modelo (para el orden estable de la lista).</li>
+      <li><code>config/config.json</code> — configuración global (editable desde el botón ⚙).</li>
     </ul>
     <p class="note">Todo vive en tu carpeta del proyecto fuera del contenedor Docker, así que no se pierde al reconstruir la imagen.</p>
 
     <h2>¿Cuántas ejecuciones se conservan?</h2>
-    <p>Las <strong>últimas 5 ejecuciones por modelo</strong>. Al resolver, las corridas más viejas se borran automáticamente (historial circular). La sección <em>Últimas ejecuciones</em> del panel lateral muestra las 10 más recientes de todos los modelos.</p>
+    <p>Por defecto, las <strong>últimas 5 ejecuciones por modelo</strong> (historial circular: las corridas más viejas se borran automáticamente). Se cambia desde la <em>Configuración</em> (botón ⚙). La sección <em>Últimas ejecuciones</em> del panel lateral muestra las ejecuciones del modelo seleccionado.</p>
+
+    <h2>Configuración</h2>
+    <p>El botón <strong>⚙</strong> abre la configuración global: método de resolución (simplex o punto interior, primal/dual), presolve, semilla, límites de tiempo/memoria, opciones de enteros (relajación, gap, cortes), análisis de sensibilidad, tipo de salida (tablas o crudo) y cuántas ejecuciones guardar. Pasá el cursor por cada <strong>?</strong> para ver qué hace cada opción. Los cambios aplican desde el próximo <em>Resolver</em>, sin reiniciar.</p>
 
     <h2>Stack</h2>
     <ul>
