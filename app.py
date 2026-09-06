@@ -14,17 +14,19 @@ Endpoints (model names are paths, docs/req_3.md — flat = depth 0):
     POST   /api/run                 -> run glpsol on a model, return solution + log
 """
 
+import io
 import re
 import json
 import shutil
+import zipfile
 import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 # All user-visible timestamps are Argentina time (GMT-3): stamps and creation
@@ -740,6 +742,154 @@ def run_model(payload: dict):
     finally:
         _active_run = None
         _run_lock.release()
+
+
+# --- export / import: backup & transfer between installations ---
+
+# Relative run-entry name inside an export zip (greedy model match is
+# deterministic: the stamp suffix is anchored at the end).
+EXPORT_RUN_RE = re.compile(r"^(?P<model>.+)-(?P<stamp>\d{8}-\d{6})\.(?P<ext>txt|log|sol|rng)$")
+
+
+@app.get("/api/export")
+def export_archive(path: str = None):
+    """Zip of everything, or of one folder subtree: models + .meta + results
+    + a manifest. Single-model export is client-side (plain .mod download)."""
+    if path is not None:
+        validate_path(path)
+        if not (MODELS_DIR / path).is_dir():
+            raise HTTPException(status_code=404, detail="Folder not found")
+        all_folders = walk_tree()[0]
+        folders = [f for f in all_folders if f == path or f.startswith(path + "/")]
+        models = models_under(path)
+    else:
+        folders, models = walk_tree()
+    stamp = datetime.now(TZ).strftime("%Y%m%d-%H%M%S")
+    label = path.replace("/", "_") if path else "todo"
+    buf = io.BytesIO()
+    runs_included = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", json.dumps({
+            "app": "mctd",
+            "exported_at": datetime.now(TZ).isoformat(timespec="seconds"),
+            "root": path or "",
+            "folders": folders,   # keeps empty folders alive through a round trip
+            "models": models,
+        }, indent=2, ensure_ascii=False))
+        for name in models:
+            z.writestr(f"models/{name}.mod", model_path(name).read_text(encoding="utf-8"))
+            meta = meta_path(name)
+            if meta.exists():
+                z.writestr(f".meta/{name}.json", meta.read_text(encoding="utf-8"))
+            for pair in run_files_for(name).values():
+                for f in pair.values():
+                    z.writestr(f"results/{f.relative_to(RESULTS_DIR)}",
+                               f.read_text(encoding="utf-8", errors="replace"))
+                    runs_included += 1
+    return Response(
+        buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="mctd-{label}-{stamp}.zip"'},
+    )
+
+
+@app.post("/api/import")
+async def import_archive(request: Request, dry_run: bool = False, overwrite: bool = False):
+    """Import a previously exported zip (raw-body upload: no python-multipart
+    dependency). Zip-slip defense: entry names are NEVER used directly —
+    every target path is rebuilt from components that passed validate_path.
+    Runs never overwrite; models respect ?overwrite=."""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(await request.body()))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="El archivo no es un zip válido")
+
+    if "manifest.json" in zf.namelist():
+        try:
+            manifest = json.loads(zf.read("manifest.json"))
+        except json.JSONDecodeError:
+            manifest = {}
+        if manifest.get("app") != "mctd":
+            raise HTTPException(status_code=400, detail="El zip no parece una exportación de mctd")
+    else:
+        manifest = {}
+
+    def safe_path(name):
+        try:
+            return validate_path(name)
+        except HTTPException:
+            return None
+
+    plan = {"new_models": [], "existing_models": [], "runs": 0, "skipped": []}
+    entries = {}
+    for entry in zf.namelist():
+        if entry.endswith("/") or entry == "manifest.json":
+            continue
+        if entry.startswith("models/") and entry.endswith(".mod"):
+            name = safe_path(entry[len("models/"):-len(".mod")])
+            if not name:
+                plan["skipped"].append(entry)
+                continue
+            (plan["existing_models"] if model_path(name).exists() else plan["new_models"]).append(name)
+            entries[entry] = ("model", name)
+        elif entry.startswith(".meta/") and entry.endswith(".json"):
+            name = safe_path(entry[len(".meta/"):-len(".json")])
+            if not name:
+                plan["skipped"].append(entry)
+                continue
+            entries[entry] = ("meta", name)
+        elif entry.startswith("results/"):
+            m = EXPORT_RUN_RE.match(entry[len("results/"):])
+            if not m or not safe_path(m.group("model")):
+                plan["skipped"].append(entry)
+                continue
+            entries[entry] = ("run", m.group("model"), m.group("stamp"), m.group("ext"))
+        else:
+            plan["skipped"].append(entry)
+    plan["runs"] = sum(1 for spec in entries.values() if spec[0] == "run")
+
+    if dry_run:
+        plan["folders"] = [f for f in manifest.get("folders", []) if safe_path(f)]
+        return plan
+
+    # restore folders (preserves empty ones), then models + meta + runs
+    for f in manifest.get("folders", []):
+        if safe_path(f):
+            (MODELS_DIR / f).mkdir(parents=True, exist_ok=True)
+    models_imported = runs_imported = 0
+    for entry, spec in entries.items():
+        if spec[0] == "model":
+            name = spec[1]
+            if model_path(name).exists() and not overwrite:
+                continue
+            if _active_run and _active_run["model"] == name:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Hay una corrida en curso de este modelo; esperá a que termine.",
+                )
+            model_path(name).parent.mkdir(parents=True, exist_ok=True)
+            model_path(name).write_text(zf.read(entry).decode("utf-8", errors="replace"), encoding="utf-8")
+            models_imported += 1
+        elif spec[0] == "meta":
+            name = spec[1]
+            if model_path(name).exists() and not overwrite:
+                continue
+            meta_path(name).parent.mkdir(parents=True, exist_ok=True)
+            meta_path(name).write_bytes(zf.read(entry))
+        else:
+            _, rmodel, rstamp, rext = spec
+            target = RESULTS_DIR / f"{rmodel}-{rstamp}.{rext}"
+            if target.exists():
+                continue  # runs never overwrite
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(zf.read(entry))
+            runs_imported += 1
+    return {
+        "status": "imported",
+        "models_imported": models_imported,
+        "runs_imported": runs_imported,
+        "skipped": plan["skipped"],
+    }
 
 
 # Static assets (only /static mount; index is served explicitly above)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 — 2026-09-06
+
+- Exportar: todo o una carpeta como `.zip` (modelos + meta + runs + manifest); modelo individual como `.mod` descargable.
+- Importar: botón Abrir o drag & drop de `.zip` con dry-run, confirmación y sobrescritura opcional; `.mod` se abre directo en el editor.
+- Defensa zip-slip: toda ruta se re-valida y reconstruye; runs nunca se sobrescriben.
+
 ## 0.5.1 — 2026-09-06
 
 - Guard de cambios sin guardar al abrir otro modelo o crear uno nuevo: guardar / no guardar / cancelar.

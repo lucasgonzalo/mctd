@@ -83,6 +83,10 @@
     .tree-children { margin-left: 13px; }
     .btn-row { display: flex; gap: 6px; margin-top: 8px; }
     .btn-row button { flex: 1; padding: 8px 6px; }
+    /* "Archivos" header row: title + open/export mini buttons */
+    .files-head { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+    .files-head h2 { margin: 0; flex: 1; }
+    .mini-btn { padding: 3px 8px; font-size: 11px; line-height: 1.3; flex-shrink: 0; }
     /* Per-item dropdown menus: fixed-position so the scrolling list never clips them */
     #file-menu, #folder-menu {
       position: fixed; z-index: 30; min-width: 190px; padding: 4px; display: none;
@@ -316,7 +320,11 @@
       <div id="runs-list"></div>
     </div>
     <div id="files-section" class="aside-section">
-      <h2>Archivos</h2>
+      <div class="files-head">
+        <h2>Archivos</h2>
+        <button id="btn-open" class="mini-btn" title="Abrir un .mod o importar un .zip desde tu computadora">📂 Abrir</button>
+        <button id="btn-export-all" class="mini-btn" title="Descargar todo como .zip">⬇ Exportar</button>
+      </div>
       <div id="model-list"></div>
       <div class="btn-row">
         <button id="btn-new">+ Nuevo</button>
@@ -506,14 +514,18 @@
   <div id="file-menu">
     <div class="fm-item" data-action="rename">✎ Editar nombre</div>
     <div class="fm-item" data-action="move">→ Mover a…</div>
+    <div class="fm-item" data-action="export">📦 Exportar</div>
     <div class="fm-item danger" data-action="delete">🗑 Eliminar</div>
   </div>
 
   <div id="folder-menu">
     <div class="fm-item" data-action="new-sub">＋ Nueva subcarpeta</div>
     <div class="fm-item" data-action="rename">✎ Renombrar carpeta</div>
+    <div class="fm-item" data-action="export">📦 Exportar carpeta</div>
     <div class="fm-item danger" data-action="delete">🗑 Eliminar carpeta</div>
   </div>
+
+  <input type="file" id="file-open" accept=".mod,.txt,.zip" hidden>
 
   <div id="rename-overlay">
     <div id="rename-modal">
@@ -1042,23 +1054,40 @@
       loadModels();
     }
 
-    // --- delete with confirmation modal ---
-    function confirmDelete(name) {
-      $('modal-text').textContent = `¿Eliminar "${name}" y todas sus ejecuciones guardadas? Esta acción no se puede deshacer.`;
+    // --- generic confirm modal (delete / import / ...) ---
+    function showConfirm(text, okLabel, onOk, danger = true) {
+      $('modal-text').textContent = text;
+      $('modal-confirm').textContent = okLabel;
+      $('modal-confirm').className = danger ? 'danger' : 'primary';
       $('modal-overlay').classList.add('open');
       $('modal-confirm').onclick = async () => {
-        const res = await fetch(`/api/models/${name}`, { method: 'DELETE' });
-        if (!res.ok) { alert('Error al eliminar'); return; }
         closeModal();
-        if ($('model-name').value === name) {
-          $('model-name').value = '';
-          $('editor').value = '';
-          clearResults();
-        }
-        loadModels();
+        await onOk();
       };
     }
-    function closeModal() { $('modal-overlay').classList.remove('open'); }
+
+    function confirmDelete(name) {
+      showConfirm(
+        `¿Eliminar "${name}" y todas sus ejecuciones guardadas? Esta acción no se puede deshacer.`,
+        'Eliminar',
+        async () => {
+          const res = await fetch(`/api/models/${name}`, { method: 'DELETE' });
+          if (!res.ok) { alert('Error al eliminar'); return; }
+          if ($('model-name').value === name) {
+            $('model-name').value = '';
+            $('editor').value = '';
+            savedContent = $('editor').value; // editor emptied by us: not dirty
+            clearResults();
+          }
+          loadModels();
+        },
+      );
+    }
+    function closeModal() {
+      $('modal-overlay').classList.remove('open');
+      $('modal-confirm').textContent = 'Eliminar'; // reset for the next caller
+      $('modal-confirm').className = 'danger';
+    }
     $('modal-cancel').onclick = closeModal;
     $('modal-overlay').onclick = (e) => { if (e.target === $('modal-overlay')) closeModal(); };
 
@@ -1143,6 +1172,7 @@
               onOk: v => apiMove(name, v, 'model'),
             });
             else if (a === 'move') openMoveTo(name);
+            else if (a === 'export') exportModelFile(name);
           } else {
             if (a === 'delete') confirmDeleteFolder(name);
             else if (a === 'rename') openPathModal({
@@ -1151,6 +1181,7 @@
               value: name,
               onOk: v => apiMove(name, v, 'folder'),
             });
+            else if (a === 'export') triggerDownload(`/api/export?path=${encodeURIComponent(name)}`);
             else if (a === 'new-sub') openPathModal({
               title: `Nueva subcarpeta en "${lastSeg(name)}"`,
               intro: `Se creará dentro de: ${name}`,
@@ -1237,21 +1268,22 @@
 
     function confirmDeleteFolder(path) {
       const count = treeData.models.filter(m => m.name.startsWith(path + '/')).length;
-      $('modal-text').textContent =
-        `¿Eliminar la carpeta "${path}" con ${count} modelo${count === 1 ? '' : 's'} y todas sus ejecuciones? Esta acción no se puede deshacer.`;
-      $('modal-overlay').classList.add('open');
-      $('modal-confirm').onclick = async () => {
-        const res = await fetch(`/api/models/${path}?type=folder`, { method: 'DELETE' });
-        if (!res.ok) { alert('Error al eliminar'); return; }
-        closeModal();
-        const cur = $('model-name').value.trim();
-        if (cur === path || cur.startsWith(path + '/')) {
-          $('model-name').value = '';
-          $('editor').value = '';
-          clearResults();
-        }
-        loadModels();
-      };
+      showConfirm(
+        `¿Eliminar la carpeta "${path}" con ${count} modelo${count === 1 ? '' : 's'} y todas sus ejecuciones? Esta acción no se puede deshacer.`,
+        'Eliminar',
+        async () => {
+          const res = await fetch(`/api/models/${path}?type=folder`, { method: 'DELETE' });
+          if (!res.ok) { alert('Error al eliminar'); return; }
+          const cur = $('model-name').value.trim();
+          if (cur === path || cur.startsWith(path + '/')) {
+            $('model-name').value = '';
+            $('editor').value = '';
+            savedContent = $('editor').value; // editor emptied by us: not dirty
+            clearResults();
+          }
+          loadModels();
+        },
+      );
     }
 
     // "Mover a…" modal (drag & drop alternative)
@@ -1310,8 +1342,90 @@
       }
     });
 
+    // --- export / import: browser downloads + zip round trip ---
+    function triggerDownload(url, filename) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || '';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+
+    // single model: plain .mod download (reimportable via Abrir/drag&drop)
+    async function exportModelFile(name) {
+      const res = await fetch(`/api/models/${name}`);
+      if (!res.ok) { alert('Error al exportar'); return; }
+      const model = await res.json();
+      const url = URL.createObjectURL(new Blob([model.content], { type: 'text/plain' }));
+      triggerDownload(url, `${lastSeg(name)}.mod`);
+      URL.revokeObjectURL(url);
+    }
+
+    $('btn-export-all').onclick = () => triggerDownload('/api/export');
+
+    // zip import: dry-run plan -> confirm -> execute (never overwrites runs)
+    async function importZipFile(file) {
+      const buf = await file.arrayBuffer();
+      const send = qs => fetch(`/api/import${qs}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: buf,
+      });
+      const res = await send('?dry_run=1');
+      if (!res.ok) { alert((await res.json().catch(() => ({}))).detail || 'Zip inválido'); return; }
+      const plan = await res.json();
+      const news = plan.new_models.length, exist = plan.existing_models.length;
+      if (!news && !exist) { alert('El zip no contiene modelos reconocibles.'); return; }
+      const skipNote = plan.skipped.length ? `\n${plan.skipped.length} entrada(s) inválida(s) se ignorarán.` : '';
+      const question = news && exist
+        ? `El zip trae ${news} modelo(s) nuevo(s) y ${exist} existente(s). ¿Sobrescribir los existentes?${skipNote}`
+        : exist
+          ? `El zip trae ${exist} modelo(s) que ya existen. ¿Sobrescribirlos?${skipNote}`
+          : `Se importarán ${news} modelo(s) nuevo(s).${skipNote}`;
+      showConfirm(question, 'Importar', async () => {
+        const r = await send(`?overwrite=${exist ? '1' : '0'}`);
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok) { alert(out.detail || 'Error al importar'); return; }
+        loadModels();
+        alert(`Importación lista: ${out.models_imported} modelo(s), ${out.runs_imported} ejecución(es).`);
+      }, false);
+    }
+
+    // single .mod import shared by "Abrir" and the desktop drop
+    async function importModelFile(f) {
+      const stem = (f.name.replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9_-]/g, '_')).slice(0, 60) || 'modelo';
+      let content = '';
+      try { content = await f.text(); } catch { content = ''; }
+      if (!content.trim()) { alert(`${f.name}: archivo vacío o ilegible`); return null; }
+      const probe = await fetch(`/api/models/${stem}`);
+      if (probe.ok && !confirm(`"${stem}" ya existe.\n¿Sobreescribirlo con "${f.name}"?`)) return null;
+      const res = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: stem, content }),
+      });
+      if (!res.ok) { alert(`${f.name}: error al guardar`); return null; }
+      return stem;
+    }
+
+    // "Abrir": file picker -> .mod opens in the editor (with unsaved guard),
+    // .zip goes through the import confirmation flow
+    $('btn-open').onclick = () => $('file-open').click();
+    $('file-open').addEventListener('change', async () => {
+      const f = $('file-open').files[0];
+      $('file-open').value = ''; // allow picking the same file again
+      if (!f) return;
+      if (f.name.toLowerCase().endsWith('.zip')) { importZipFile(f); return; }
+      guardUnsaved(async () => {
+        const stem = await importModelFile(f);
+        if (stem) openModel(stem);
+      }, f.name);
+    });
+
     // --- drag & drop: import model files from the DESKTOP into the sidebar ---
-    // (internal moves use MIME_MODEL and never enter this branch)
+    // (.mod files import as models; .zip files go through importZipFile;
+    // internal moves use MIME_MODEL and never enter this branch)
     const filesSection = $('files-section');
     filesSection.addEventListener('dragover', e => {
       if (!e.dataTransfer.types.includes('Files')) return;
@@ -1328,22 +1442,11 @@
       const files = [...e.dataTransfer.files];
       const skipped = [];
       for (const f of files) {
-        // strip extension, make the stem NAME_RE-safe, cap its length
-        const stem = (f.name.replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9_-]/g, '_')).slice(0, 60) || 'modelo';
-        let content = '';
-        try { content = await f.text(); } catch { content = ''; }
-        if (!content.trim()) { skipped.push(`${f.name} (vacío o ilegible)`); continue; }
-        const probe = await fetch(`/api/models/${stem}`);
-        if (probe.ok && !confirm(`"${stem}" ya existe.\n¿Sobreescribirlo con el archivo soltado?`)) {
-          skipped.push(`${f.name} (cancelado)`);
+        if (f.name.toLowerCase().endsWith('.zip')) {
+          await importZipFile(f);
           continue;
         }
-        const res = await fetch('/api/models', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: stem, content }),
-        });
-        if (!res.ok) skipped.push(`${f.name} (error al guardar)`);
+        if (!(await importModelFile(f))) skipped.push(f.name);
       }
       loadModels();
       if (skipped.length) alert('No se importaron:\n' + skipped.join('\n'));
