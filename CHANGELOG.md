@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-09-05
+
+- Carpetas anidadas (hasta 5 niveles) con árbol colapsable en el sidebar (`docs/req_3.md`).
+- Drag & drop interno: mover modelos a carpetas; menú ⋮ con "Mover a…".
+- Menú ⋮ de carpeta: renombrar, eliminar (recursivo, con confirmación), nueva subcarpeta.
+- `results/` y `.meta/` espejan el árbol; el historial sigue al modelo al mover.
+- Modelos y ejecuciones existentes (planos) siguen funcionando sin migración.
+
 ## 0.4.0 — 2026-09-05
 
 - Drag & drop de archivos al sidebar para importar modelos.

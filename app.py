@@ -1,18 +1,22 @@
 """GLPK MathProg web IDE - minimal local backend.
 
-Endpoints:
-    GET  /                   -> serves static/index.html
-    GET  /api/models         -> list saved .mod files
-    GET  /api/models/{name}  -> read one model content
-    POST /api/models         -> save {name, content} to models/{name}.mod
-    POST /api/models/{name}/rename -> rename model + meta + run artifacts
-    GET  /api/config         -> current configuration (file merged over defaults)
-    PUT  /api/config         -> validate + persist config/config.json
-    POST /api/run            -> run glpsol on a model, return solution + log
+Endpoints (model names are paths, docs/req_3.md — flat = depth 0):
+    GET    /                        -> serves static/index.html
+    GET    /api/models              -> folder + model tree
+    GET    /api/models/{name:path}  -> read one model content
+    POST   /api/models              -> save {name, content} to models/{name}.mod
+    POST   /api/models/move         -> {from, to, type} rename/move model or folder
+    POST   /api/models/folders      -> {path} create folder
+    DELETE /api/models/{name:path}  -> delete model, or folder (?type=folder)
+    GET    /api/runs                -> recent runs; ?model= and ?model=&raw= filters
+    GET    /api/config              -> current configuration (file merged over defaults)
+    PUT    /api/config              -> validate + persist config/config.json
+    POST   /api/run                 -> run glpsol on a model, return solution + log
 """
 
 import re
 import json
+import shutil
 import subprocess
 import threading
 from datetime import datetime
@@ -59,14 +63,46 @@ _run_lock = threading.Lock()
 _active_run = None  # {"model": str, "started": str} while a run is live
 
 
-def validate_name(name: str) -> str:
-    """Reject unsafe model names before they touch the filesystem."""
-    if not name or not NAME_RE.match(name):
+# Model/folder paths (docs/req_3.md): 1-5 NAME_RE segments joined by '/'.
+# A flat name is a depth-0 path, so legacy models and results keep working
+# with zero migration. NAME_RE already bans '.' and '..', and empty segments
+# fail the per-segment match.
+MAX_PATH_DEPTH = 5
+MAX_PATH_LEN = 120
+
+
+def validate_path(name: str) -> str:
+    """Reject unsafe model/folder paths before they touch the filesystem."""
+    if (
+        not name
+        or len(name) > MAX_PATH_LEN
+        or len(name.split("/")) > MAX_PATH_DEPTH
+        or any(not NAME_RE.match(s) for s in name.split("/"))
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Invalid model name: use letters, digits, - and _ only",
+            detail=(
+                "Ruta inválida: segmentos con letras, números, - y _, "
+                "separados por / (máx. 5 niveles)"
+            ),
         )
     return name
+
+
+def model_path(name: str) -> Path:
+    return MODELS_DIR / f"{name}.mod"
+
+
+def meta_path(name: str) -> Path:
+    return META_DIR / f"{name}.json"
+
+
+def models_under(folder: str) -> list:
+    """Model paths inside a folder (recursive), for move/delete guards."""
+    base = MODELS_DIR / folder
+    if not base.is_dir():
+        return []
+    return [str(p.relative_to(MODELS_DIR).with_suffix("")) for p in base.rglob("*.mod")]
 
 
 # --- configuration (docs/req_1.md) ---
@@ -240,12 +276,16 @@ def build_argv(cfg: dict, model_path: Path, out_file: Path, sol_file: Path,
 def run_files_for(name: str) -> dict:
     """Group result files by run stamp: {stamp: {'txt': path, 'log': path}}.
 
-    The strict timestamp suffix keeps 'tp' from matching 'tp-1' runs.
+    results/ mirrors the model tree (docs/req_3.md); a root-level model is
+    depth 0, so flat legacy files keep working unchanged. The strict
+    timestamp suffix keeps 'tp' from matching 'tp-1' runs.
     """
-    pattern = re.compile(rf"^{re.escape(name)}-(\d{{8}}-\d{{6}})\.(txt|log|sol|rng)$")
+    parent = RESULTS_DIR / Path(name).parent
+    last = Path(name).name
+    pattern = re.compile(rf"^{re.escape(last)}-(\d{{8}}-\d{{6}})\.(txt|log|sol|rng)$")
     runs: dict = {}
-    if RESULTS_DIR.is_dir():
-        for f in RESULTS_DIR.iterdir():
+    if parent.is_dir():
+        for f in parent.iterdir():
             m = pattern.match(f.name)
             if m:
                 runs.setdefault(m.group(1), {})[m.group(2)] = f
@@ -283,25 +323,36 @@ def created_at(name: str) -> str:
     every save, so the app records 'created' once when the model first appears.
     Missing meta (files created outside the app) is backfilled from mtime.
     """
-    meta = META_DIR / f"{name}.json"
+    meta = meta_path(name)
     if meta.exists():
         try:
             return json.loads(meta.read_text(encoding="utf-8"))["created"]
         except (json.JSONDecodeError, KeyError):
             pass  # fall through and backfill
-    path = MODELS_DIR / f"{name}.mod"
+    path = model_path(name)
     created = datetime.fromtimestamp(path.stat().st_mtime, TZ).isoformat(timespec="seconds")
+    meta.parent.mkdir(parents=True, exist_ok=True)
     meta.write_text(json.dumps({"created": created}), encoding="utf-8")
     return created
 
 
 def all_runs(limit: int = 10) -> list:
-    """Most recent executions across all models: [{model, stamp}, ...]."""
+    """Most recent executions across all models: [{model, raw, stamp}, ...].
+
+    rglob walks the mirrored results tree; the model path is dirname +
+    filename minus the -{stamp}.{ext} suffix (greedy match is deterministic).
+    """
     seen = {}
-    for f in RESULTS_DIR.iterdir():
-        m = RUN_FILE_RE.match(f.name)
-        if m:
-            seen[(m.group("model"), m.group("stamp"))] = f.stat().st_mtime
+    if RESULTS_DIR.is_dir():
+        for f in RESULTS_DIR.rglob("*"):
+            if not f.is_file():
+                continue
+            m = RUN_FILE_RE.match(f.name)
+            if not m:
+                continue
+            rel_parent = f.relative_to(RESULTS_DIR).parent
+            model = f"{rel_parent}/{m.group('model')}" if str(rel_parent) != "." else m.group("model")
+            seen[(model, m.group("stamp"))] = f.stat().st_mtime
     ranked = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)[:limit]
     return [{"model": model, "raw": raw, "stamp": fmt_stamp(raw)} for (model, raw), _ in ranked]
 
@@ -348,57 +399,76 @@ def guide():
     return FileResponse(BASE_DIR / "static" / "guide.html")
 
 
+def walk_tree() -> tuple:
+    """(folders, model names) under models/, excluding .meta.
+
+    Folders are real directories (empty ones included); models are paths
+    without the .mod suffix.
+    """
+    folders, models = [], []
+    for p in MODELS_DIR.rglob("*"):
+        rel = p.relative_to(MODELS_DIR)
+        if rel.parts[0] == ".meta":
+            continue
+        if p.is_dir():
+            folders.append(str(rel))
+        elif p.suffix == ".mod":
+            models.append(str(rel.with_suffix("")))
+    return sorted(folders), models
+
+
 @app.get("/api/models")
 def list_models():
-    return [
-        {"name": m.stem, "created": created_at(m.stem)}
-        for m in MODELS_DIR.glob("*.mod")
-    ]
-
-
-@app.get("/api/runs")
-def list_runs():
-    return all_runs(10)
-
-
-@app.get("/api/runs/{name}")
-def list_model_runs(name: str):
-    """Runs of one model, newest first (sidebar view when a model is selected)."""
-    validate_name(name)
-    if not (MODELS_DIR / f"{name}.mod").exists():
-        raise HTTPException(status_code=404, detail="Model not found")
-    runs = run_files_for(name)
-    return [
-        {"model": name, "raw": raw, "stamp": fmt_stamp(raw)}
-        for raw in sorted(runs, reverse=True)[:20]
-    ]
-
-
-@app.get("/api/runs/{name}/{raw}")
-def get_run(name: str, raw: str):
-    validate_name(name)
-    if not STAMP_RE.match(raw):
-        raise HTTPException(status_code=400, detail="Invalid run stamp")
-    txt = RESULTS_DIR / f"{name}-{raw}.txt"
-    log = RESULTS_DIR / f"{name}-{raw}.log"
-    sol = RESULTS_DIR / f"{name}-{raw}.sol"
-    rng = RESULTS_DIR / f"{name}-{raw}.rng"
-    if not txt.exists() and not log.exists():
-        raise HTTPException(status_code=404, detail="Run not found")
+    folders, names = walk_tree()
     return {
-        "model": name,
-        "stamp": fmt_stamp(raw),
-        "solution": txt.read_text(encoding="utf-8", errors="replace") if txt.exists() else "",
-        "sol": sol.read_text(encoding="utf-8", errors="replace") if sol.exists() else "",
-        "ranges": rng.read_text(encoding="utf-8", errors="replace") if rng.exists() else "",
-        "log": log.read_text(encoding="utf-8", errors="replace") if log.exists() else "",
+        "folders": folders,
+        "models": [{"name": n, "created": created_at(n)} for n in names],
     }
 
 
-@app.get("/api/models/{name}")
+@app.get("/api/runs")
+def list_runs(model: str = None, raw: str = None):
+    """Recent runs across all models; ?model= filters one model, and
+    ?model=&raw= returns a single run detail. (docs/req_3.md: the old
+    two-segment /api/runs/{name}/{raw} route cannot carry paths with '/')"""
+    if model is not None and raw is not None:
+        validate_path(model)
+        if not STAMP_RE.match(raw):
+            raise HTTPException(status_code=400, detail="Invalid run stamp")
+        parent = RESULTS_DIR / Path(model).parent
+        last = Path(model).name
+        txt = parent / f"{last}-{raw}.txt"
+        log = parent / f"{last}-{raw}.log"
+        sol = parent / f"{last}-{raw}.sol"
+        rng = parent / f"{last}-{raw}.rng"
+        if not txt.exists() and not log.exists():
+            raise HTTPException(status_code=404, detail="Run not found")
+        return {
+            "model": model,
+            "raw": raw,
+            "stamp": fmt_stamp(raw),
+            "exit_code": None,
+            "solution": txt.read_text(encoding="utf-8", errors="replace") if txt.exists() else "",
+            "sol": sol.read_text(encoding="utf-8", errors="replace") if sol.exists() else "",
+            "ranges": rng.read_text(encoding="utf-8", errors="replace") if rng.exists() else "",
+            "log": log.read_text(encoding="utf-8", errors="replace") if log.exists() else "",
+        }
+    if model is not None:
+        validate_path(model)
+        if not model_path(model).exists():
+            raise HTTPException(status_code=404, detail="Model not found")
+        runs = run_files_for(model)
+        return [
+            {"model": model, "raw": r, "stamp": fmt_stamp(r)}
+            for r in sorted(runs, reverse=True)[:20]
+        ]
+    return all_runs(10)
+
+
+@app.get("/api/models/{name:path}")
 def get_model(name: str):
-    validate_name(name)
-    path = MODELS_DIR / f"{name}.mod"
+    validate_path(name)
+    path = model_path(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Model not found")
 
@@ -425,74 +495,143 @@ def get_model(name: str):
     return {"name": name, "content": path.read_text(encoding="utf-8"), "last_run": last_run}
 
 
-@app.delete("/api/models/{name}")
-def delete_model(name: str):
-    validate_name(name)
-    path = MODELS_DIR / f"{name}.mod"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Model not found")
-    path.unlink()
-    meta = META_DIR / f"{name}.json"
-    if meta.exists():
-        meta.unlink()
-    removed = 0
-    for pair in run_files_for(name).values():
-        for f in pair.values():
-            if f.exists():
-                f.unlink()
-                removed += 1
-    return {"status": "deleted", "name": name, "result_files_removed": removed}
-
-
-@app.post("/api/models/{name}/rename")
-def rename_model(name: str, payload: dict):
-    """Rename a model: move the .mod, its .meta entry and ALL its run
-    artifacts so the execution history follows the model.
-
-    Rejected while a run of this model is live: glpsol writes results under
-    the old name and prune would resurrect orphaned files.
-    """
-    validate_name(name)
-    new_name = validate_name(payload.get("new_name", ""))
-    src = MODELS_DIR / f"{name}.mod"
-    if not src.exists():
-        raise HTTPException(status_code=404, detail="Model not found")
-    if _active_run and _active_run["model"] == name:
+@app.delete("/api/models/{name:path}")
+def delete_model(name: str, type: str = "model"):  # noqa: A002 - query param name
+    """Delete a model, or a folder with everything inside (?type=folder)."""
+    validate_path(name)
+    if type not in ("model", "folder"):
+        raise HTTPException(status_code=400, detail="type must be 'model' or 'folder'")
+    affected = [name] if type == "model" else models_under(name)
+    if _active_run and _active_run["model"] in affected:
         raise HTTPException(
             status_code=409,
             detail="Hay una corrida en curso de este modelo; esperá a que termine.",
         )
-    if new_name == name:
-        return {"status": "renamed", "name": new_name, "result_files_renamed": 0}
-    dst = MODELS_DIR / f"{new_name}.mod"
-    if dst.exists():
-        raise HTTPException(status_code=409, detail="Ya existe un modelo con ese nombre")
 
+    if type == "model":
+        path = model_path(name)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Model not found")
+        path.unlink()
+        meta = meta_path(name)
+        if meta.exists():
+            meta.unlink()
+        removed = 0
+        for pair in run_files_for(name).values():
+            for f in pair.values():
+                if f.exists():
+                    f.unlink()
+                    removed += 1
+        return {"status": "deleted", "name": name, "result_files_removed": removed}
+
+    # folder: recursive delete of models + meta + results subtrees
+    folder = MODELS_DIR / name
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+    removed = 0
+    for m in affected:
+        for pair in run_files_for(m).values():
+            for f in pair.values():
+                if f.exists():
+                    f.unlink()
+                    removed += 1
+    shutil.rmtree(folder)
+    shutil.rmtree(META_DIR / name, ignore_errors=True)
+    shutil.rmtree(RESULTS_DIR / name, ignore_errors=True)
+    return {
+        "status": "deleted",
+        "name": name,
+        "models_removed": len(affected),
+        "result_files_removed": removed,
+    }
+
+
+@app.post("/api/models/move")
+def move_model(payload: dict):
+    """Rename/move a model or a whole folder (docs/req_3.md).
+
+    Model: moves .mod + .meta + run artifacts (history follows the model).
+    Folder: moves the three mirrored subtrees at once. Rejected while a run
+    of any affected model is live.
+    """
+    fr = validate_path(payload.get("from", ""))
+    to = validate_path(payload.get("to", ""))
+    kind = payload.get("type", "model")
+    if kind not in ("model", "folder"):
+        raise HTTPException(status_code=400, detail="type must be 'model' or 'folder'")
+    if to == fr or to.startswith(fr + "/"):
+        raise HTTPException(status_code=400, detail="No se puede mover dentro de sí mismo")
+    affected = [fr] if kind == "model" else models_under(fr)
+    if _active_run and _active_run["model"] in affected:
+        raise HTTPException(
+            status_code=409,
+            detail="Hay una corrida en curso de este modelo; esperá a que termine.",
+        )
+
+    if kind == "model":
+        src = model_path(fr)
+        if not src.exists():
+            raise HTTPException(status_code=404, detail="Model not found")
+        if model_path(to).exists() or (MODELS_DIR / to).exists():
+            raise HTTPException(status_code=409, detail="Ya existe un modelo o carpeta con ese nombre")
+        model_path(to).parent.mkdir(parents=True, exist_ok=True)
+        src.rename(model_path(to))
+        if meta_path(fr).exists():
+            meta_path(to).parent.mkdir(parents=True, exist_ok=True)
+            meta_path(fr).rename(meta_path(to))  # keeps the original creation date
+        moved = 0
+        dest_dir = RESULTS_DIR / Path(to).parent
+        for pair in run_files_for(fr).values():
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for f in pair.values():
+                if f.exists():
+                    # {from}-{stamp}.{ext} -> {to}-{stamp}.{ext}
+                    f.rename(dest_dir / f"{Path(to).name}{f.name[len(Path(fr).name):]}")
+                    moved += 1
+        return {"status": "moved", "from": fr, "to": to, "result_files_moved": moved}
+
+    # folder move: the three subtrees keep mirroring each other
+    src = MODELS_DIR / fr
+    if not src.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+    dst = MODELS_DIR / to
+    if dst.exists() or model_path(to).exists():
+        raise HTTPException(status_code=409, detail="Ya existe un modelo o carpeta con ese nombre")
+    dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)
-    meta_src, meta_dst = META_DIR / f"{name}.json", META_DIR / f"{new_name}.json"
-    if meta_src.exists():
-        meta_src.rename(meta_dst)  # keep the original creation date
-    renamed = 0
-    for pair in run_files_for(name).values():
-        for f in pair.values():
-            if f.exists():
-                # results/{name}-{stamp}.{ext} -> results/{new_name}-{stamp}.{ext}
-                f.rename(RESULTS_DIR / f"{new_name}{f.name[len(name):]}")
-                renamed += 1
-    return {"status": "renamed", "name": new_name, "result_files_renamed": renamed}
+    if (META_DIR / fr).is_dir():
+        (META_DIR / to).parent.mkdir(parents=True, exist_ok=True)
+        (META_DIR / fr).rename(META_DIR / to)
+    if (RESULTS_DIR / fr).is_dir():
+        (RESULTS_DIR / to).parent.mkdir(parents=True, exist_ok=True)
+        (RESULTS_DIR / fr).rename(RESULTS_DIR / to)
+    return {"status": "moved", "from": fr, "to": to, "models_moved": len(affected)}
+
+
+@app.post("/api/models/folders")
+def create_folder(payload: dict):
+    """Create a (possibly nested) folder under models/."""
+    path = validate_path(payload.get("path", ""))
+    folder = MODELS_DIR / path
+    if folder.exists() or model_path(path).exists():
+        raise HTTPException(status_code=409, detail="Ya existe una carpeta o modelo con ese nombre")
+    folder.mkdir(parents=True, exist_ok=True)
+    return {"status": "created", "path": path}
 
 
 @app.post("/api/models")
 def save_model(payload: dict):
-    name = validate_name(payload.get("name", ""))
+    name = validate_path(payload.get("name", ""))
     content = payload.get("content", "")
     if not content.strip():
         raise HTTPException(status_code=400, detail="Model content is empty")
-    path = MODELS_DIR / f"{name}.mod"
+    path = model_path(name)
     is_new = not path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     if is_new:
-        (META_DIR / f"{name}.json").write_text(
+        meta_path(name).parent.mkdir(parents=True, exist_ok=True)
+        meta_path(name).write_text(
             json.dumps({"created": datetime.now(TZ).isoformat(timespec="seconds")}), encoding="utf-8"
         )
     return {"status": "saved", "name": name}
@@ -527,8 +666,8 @@ def put_config(payload: dict):
 @app.post("/api/run")
 def run_model(payload: dict):
     global _active_run
-    name = validate_name(payload.get("name", ""))
-    path = MODELS_DIR / f"{name}.mod"
+    name = validate_path(payload.get("name", ""))
+    path = model_path(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Model not found - save it first")
 
@@ -550,6 +689,8 @@ def run_model(payload: dict):
         timeout = cfg["runtime"]["timeout_seconds"]
 
         stamp = datetime.now(TZ).strftime("%Y%m%d-%H%M%S")
+        # results/ mirrors the model tree: ensure the subdirectory exists
+        (RESULTS_DIR / Path(name).parent).mkdir(parents=True, exist_ok=True)
         out_file = RESULTS_DIR / f"{name}-{stamp}.txt"
         sol_file = RESULTS_DIR / f"{name}-{stamp}.sol"
         rng_file = RESULTS_DIR / f"{name}-{stamp}.rng"

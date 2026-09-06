@@ -63,26 +63,39 @@
     .model-item.active { background: var(--card); outline: 1px solid var(--accent); }
     .model-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .model-item .date { font-size: 10px; color: var(--muted); flex-shrink: 0; }
-    .model-item .menu-btn {
+    .menu-btn {
       visibility: hidden; background: none; border: none; color: var(--muted);
       cursor: pointer; font-size: 15px; font-weight: 700; padding: 2px 6px;
       flex-shrink: 0; line-height: 1; border-radius: 4px;
     }
-    .model-item:hover .menu-btn { visibility: visible; }
-    .model-item .menu-btn:hover { color: var(--text); background: var(--card); }
-    /* Per-file dropdown menu: fixed-position so the scrolling list never clips it */
-    #file-menu {
-      position: fixed; z-index: 30; min-width: 170px; padding: 4px; display: none;
+    .model-item:hover .menu-btn, .folder-item:hover .menu-btn { visibility: visible; }
+    .menu-btn:hover { color: var(--text); background: var(--card); }
+    /* Sidebar tree: folders (drop targets) nest model rows */
+    .folder-item {
+      display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 6px;
+      cursor: pointer; margin-bottom: 2px; font-size: 13px;
+    }
+    .folder-item:hover { background: var(--card); }
+    .folder-item .caret { color: var(--muted); width: 12px; flex-shrink: 0; transition: transform .12s; }
+    .folder-item .caret.open { transform: rotate(90deg); }
+    .folder-item .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .folder-item.drop-on { outline: 1px dashed var(--accent); background: rgba(137, 180, 250, .14); }
+    .tree-children { margin-left: 13px; }
+    .btn-row { display: flex; gap: 6px; margin-top: 8px; }
+    .btn-row button { flex: 1; padding: 8px 6px; }
+    /* Per-item dropdown menus: fixed-position so the scrolling list never clips them */
+    #file-menu, #folder-menu {
+      position: fixed; z-index: 30; min-width: 190px; padding: 4px; display: none;
       background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
     }
-    #file-menu.open { display: block; }
-    #file-menu .fm-item {
+    #file-menu.open, #folder-menu.open { display: block; }
+    #file-menu .fm-item, #folder-menu .fm-item {
       display: flex; align-items: center; gap: 8px;
       padding: 7px 10px; border-radius: 5px; cursor: pointer; font-size: 13px;
     }
-    #file-menu .fm-item:hover { background: var(--card); }
-    #file-menu .fm-item.danger { color: var(--err); }
+    #file-menu .fm-item:hover, #folder-menu .fm-item:hover { background: var(--card); }
+    #file-menu .fm-item.danger, #folder-menu .fm-item.danger { color: var(--err); }
     /* Drag & drop import: dropping files from the desktop highlights the block */
     #files-section.drop-target { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 8px; }
     /* Main */
@@ -163,17 +176,17 @@
     #modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
     button.danger { background: var(--err); color: #1e1e2e; font-weight: 600; border: none; }
 
-    /* Rename modal (same visual language as the delete modal) */
-    #rename-overlay {
+    /* Rename / move modals (same visual language as the delete modal) */
+    #rename-overlay, #move-overlay {
       position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
       display: none; align-items: center; justify-content: center; z-index: 15;
     }
-    #rename-overlay.open { display: flex; }
-    #rename-modal {
+    #rename-overlay.open, #move-overlay.open { display: flex; }
+    #rename-modal, #move-modal {
       background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
       padding: 20px; width: 90%; max-width: 380px;
     }
-    #rename-modal h2 { font-size: 15px; margin-bottom: 8px; }
+    #rename-modal h2, #move-modal h2 { font-size: 15px; margin-bottom: 8px; }
     #rename-modal p { font-size: 13px; color: var(--muted); margin-bottom: 12px; word-break: break-all; }
     #rename-input {
       width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
@@ -182,7 +195,12 @@
     }
     #rename-input:focus { outline: 1px solid var(--accent); }
     #rename-error { color: var(--err); font-size: 12px; min-height: 16px; margin: 6px 0 10px; }
-    #rename-modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+    #rename-modal .actions, #move-modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+    #move-select {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; color: var(--text); font-size: 13px; margin: 4px 0 12px;
+    }
+    #move-select:focus { outline: 1px solid var(--accent); }
 
     /* Tooltip: "?" icon that reveals its text on hover.
        Anchored to the RIGHT of the icon: the modal scrolls (overflow-y: auto),
@@ -287,13 +305,16 @@
     <div id="files-section" class="aside-section">
       <h2>Archivos</h2>
       <div id="model-list"></div>
-      <button id="btn-new" style="margin-top:8px">+ Nuevo</button>
+      <div class="btn-row">
+        <button id="btn-new">+ Nuevo</button>
+        <button id="btn-new-folder">+ Carpeta</button>
+      </div>
     </div>
   </aside>
 
   <main>
     <div class="toolbar">
-      <input id="model-name" placeholder="nombre_del_modelo" spellcheck="false">
+      <input id="model-name" placeholder="carpeta/nombre_del_modelo" spellcheck="false">
       <button id="btn-config" title="Configuración">⚙</button>
       <button id="btn-save">Guardar</button>
       <button id="btn-run" class="primary">Resolver ▶</button>
@@ -471,18 +492,36 @@
 
   <div id="file-menu">
     <div class="fm-item" data-action="rename">✎ Editar nombre</div>
+    <div class="fm-item" data-action="move">→ Mover a…</div>
     <div class="fm-item danger" data-action="delete">🗑 Eliminar</div>
+  </div>
+
+  <div id="folder-menu">
+    <div class="fm-item" data-action="new-sub">＋ Nueva subcarpeta</div>
+    <div class="fm-item" data-action="rename">✎ Renombrar carpeta</div>
+    <div class="fm-item danger" data-action="delete">🗑 Eliminar carpeta</div>
   </div>
 
   <div id="rename-overlay">
     <div id="rename-modal">
-      <h2>Editar nombre</h2>
+      <h2 id="rename-title">Editar nombre</h2>
       <p id="rename-from"></p>
-      <input id="rename-input" spellcheck="false" placeholder="nombre_del_modelo">
+      <input id="rename-input" spellcheck="false" placeholder="carpeta/nombre">
       <div id="rename-error"></div>
       <div class="actions">
         <button id="rename-cancel">Cancelar</button>
         <button id="rename-save" class="primary">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="move-overlay">
+    <div id="move-modal">
+      <h2 id="move-title">Mover a…</h2>
+      <select id="move-select"></select>
+      <div class="actions">
+        <button id="move-cancel">Cancelar</button>
+        <button id="move-save" class="primary">Mover</button>
       </div>
     </div>
   </div>
@@ -814,35 +853,100 @@
       }
     };
 
+    // --- sidebar tree (docs/req_3.md): folders + models, recursive render ---
+    function renderTreeLevel(container, parent, byParent, selected) {
+      const node = byParent[parent];
+      if (!node) return;
+      for (const f of node.folders) {
+        const open = expandedFolders.has(f);
+        const row = document.createElement('div');
+        row.className = 'folder-item';
+        const caret = document.createElement('span');
+        caret.className = 'caret' + (open ? ' open' : '');
+        caret.textContent = '▸';
+        const fname = document.createElement('span');
+        fname.className = 'fname';
+        fname.textContent = lastSeg(f);
+        fname.title = f;
+        const mb = document.createElement('button');
+        mb.className = 'menu-btn';
+        mb.textContent = '⋮';
+        mb.title = 'Opciones de carpeta';
+        mb.onclick = (e) => { e.stopPropagation(); openMenu('folder', f, mb); };
+        row.append(caret, fname, mb);
+        row.onclick = () => {
+          if (open) expandedFolders.delete(f); else expandedFolders.add(f);
+          loadModels();
+        };
+        // drop target: move a dragged model into this folder
+        row.addEventListener('dragover', e => {
+          if (e.dataTransfer.types.includes(MIME_MODEL)) { e.preventDefault(); row.classList.add('drop-on'); }
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('drop-on'));
+        row.addEventListener('drop', e => {
+          if (!e.dataTransfer.types.includes(MIME_MODEL)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          row.classList.remove('drop-on');
+          const name = e.dataTransfer.getData(MIME_MODEL);
+          if (name && name !== f && !f.startsWith(name + '/')) {
+            apiMove(name, `${f}/${lastSeg(name)}`, 'model', true);
+          }
+        });
+        container.appendChild(row);
+        const kids = document.createElement('div');
+        kids.className = 'tree-children';
+        container.appendChild(kids);
+        if (open) renderTreeLevel(kids, f, byParent, selected);
+      }
+      for (const m of node.models) {
+        const div = document.createElement('div');
+        div.className = 'model-item' + (m.name === selected ? ' active' : '');
+        div.draggable = true;
+        div.title = m.name; // full path on hover; the row shows the last segment
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = lastSeg(m.name);
+        const date = document.createElement('span');
+        date.className = 'date';
+        date.textContent = m.created.slice(0, 10);
+        const menu = document.createElement('button');
+        menu.className = 'menu-btn';
+        menu.textContent = '⋮';
+        menu.title = 'Opciones';
+        menu.onclick = (e) => { e.stopPropagation(); openMenu('model', m.name, menu); };
+        div.append(name, date, menu);
+        div.onclick = () => openModel(m.name);
+        div.addEventListener('dragstart', e => {
+          e.dataTransfer.setData(MIME_MODEL, m.name);
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        container.appendChild(div);
+      }
+    }
+
     // --- sidebar lists: executions of the selected model + files (by creation date) ---
     async function loadModels() {
       closeFileMenu();
       const selected = $('model-name').value.trim();
-      const [modelsRes, runsRes] = await Promise.all([
+      const [treeRes, runsRes] = await Promise.all([
         fetch('/api/models'),
-        selected ? fetch(`/api/runs/${encodeURIComponent(selected)}`) : Promise.resolve(null),
+        selected ? fetch(`/api/runs?model=${encodeURIComponent(selected)}`) : Promise.resolve(null),
       ]);
-      const models = await modelsRes.json();
+      treeData = await treeRes.json();
       const runs = runsRes && runsRes.ok ? await runsRes.json() : null; // null = no model selected
 
-      models.sort((a, b) => b.created.localeCompare(a.created)); // newest created first, stable across runs
+      treeData.models.sort((a, b) => b.created.localeCompare(a.created)); // newest created first
+      if (expandedFolders === null) expandedFolders = new Set(treeData.folders); // first load: all open
+
+      const byParent = {}; // folder path -> {folders: [...], models: [...]}
+      for (const f of treeData.folders) (byParent[folderOf(f)] ??= { folders: [], models: [] }).folders.push(f);
+      for (const m of treeData.models) (byParent[folderOf(m.name)] ??= { folders: [], models: [] }).models.push(m);
+      Object.values(byParent).forEach(n => n.folders.sort());
 
       const list = $('model-list');
       list.innerHTML = '';
-      for (const m of models) {
-        const div = document.createElement('div');
-        div.className = 'model-item' + (m.name === selected ? ' active' : '');
-        const name = document.createElement('span');
-        name.className = 'name'; name.textContent = m.name;
-        const date = document.createElement('span');
-        date.className = 'date'; date.textContent = m.created.slice(0, 10);
-        const menu = document.createElement('button');
-        menu.className = 'menu-btn'; menu.textContent = '⋮'; menu.title = 'Opciones';
-        menu.onclick = (e) => { e.stopPropagation(); openFileMenu(m.name, menu); };
-        div.append(name, date, menu);
-        div.onclick = () => openModel(m.name);
-        list.appendChild(div);
-      }
+      renderTreeLevel(list, '', byParent, selected);
 
       const rlist = $('runs-list');
       rlist.innerHTML = '';
@@ -870,7 +974,7 @@
     }
 
     async function loadRun(model, raw) {
-      const res = await fetch(`/api/runs/${model}/${raw}`);
+      const res = await fetch(`/api/runs?model=${encodeURIComponent(model)}&raw=${raw}`);
       if (!res.ok) { loadModels(); return; } // run vanished (deleted) -> refresh
       const run = await res.json();
       run.exit_code = null;
@@ -932,89 +1036,146 @@
     $('modal-cancel').onclick = closeModal;
     $('modal-overlay').onclick = (e) => { if (e.target === $('modal-overlay')) closeModal(); };
 
-    // --- per-file "⋮" dropdown ---
-    const fileMenu = $('file-menu');
-    let menuModel = null; // model the open menu refers to
+    // --- per-item "⋮" dropdowns + path modals + move (docs/req_3.md) ---
+    const MIME_MODEL = 'application/x-mctd-model'; // internal drag type (never 'Files')
+    const SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
+    const PATH_CLIENT_RE = /^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+){0,4}$/;
+
+    let expandedFolders = null; // null until first load (then: everything open)
+    let treeData = { folders: [], models: [] };
+
+    function folderOf(p) { return p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : ''; }
+    function lastSeg(p) { return p.slice(p.lastIndexOf('/') + 1); }
+    function expandTo(path) {
+      const parts = path.split('/');
+      for (let i = 1; i <= parts.length; i++) expandedFolders.add(parts.slice(0, i).join('/'));
+    }
+
+    // Keep the editor session coherent after any rename/move (model or folder)
+    function afterMove(fr, to) {
+      const fix = s => (s === fr ? to : s.startsWith(fr + '/') ? to + s.slice(fr.length) : s);
+      const cur = fix($('model-name').value.trim());
+      if (cur !== $('model-name').value.trim()) $('model-name').value = cur;
+      if (lastRun) {
+        lastRun.model = fix(lastRun.model);
+        currentRunKey = `${lastRun.model}|${lastRun.raw}`;
+        render();
+      }
+      expandedFolders = new Set([...expandedFolders].map(fix));
+    }
+
+    async function apiMove(fr, to, type, quiet) {
+      const res = await fetch('/api/models/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: fr, to, type }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        const msg = res.status === 409
+          ? 'Ya existe un modelo o carpeta con ese nombre.'
+          : (d.detail || 'Error al mover.');
+        if (quiet) alert(msg); else $('rename-error').textContent = msg;
+        return false;
+      }
+      afterMove(fr, to);
+      loadModels();
+    }
+
+    let openMenuEl = null, openMenuCtx = null; // {kind: 'model'|'folder', name}
 
     function closeFileMenu() {
-      fileMenu.classList.remove('open');
-      menuModel = null;
+      if (openMenuEl) openMenuEl.classList.remove('open');
+      openMenuEl = null;
+      openMenuCtx = null;
     }
 
-    function openFileMenu(name, anchor) {
-      menuModel = name;
-      fileMenu.classList.add('open'); // display first, then measure + clamp to viewport
+    function openMenu(kind, name, anchor) {
+      closeFileMenu();
+      openMenuCtx = { kind, name };
+      openMenuEl = kind === 'folder' ? $('folder-menu') : $('file-menu');
+      openMenuEl.classList.add('open'); // display first, then measure + clamp to viewport
       const r = anchor.getBoundingClientRect();
-      const mw = fileMenu.offsetWidth, mh = fileMenu.offsetHeight;
-      fileMenu.style.left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8)) + 'px';
-      fileMenu.style.top = Math.min(r.bottom + 4, window.innerHeight - mh - 8) + 'px';
+      const mw = openMenuEl.offsetWidth, mh = openMenuEl.offsetHeight;
+      openMenuEl.style.left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8)) + 'px';
+      openMenuEl.style.top = Math.min(r.bottom + 4, window.innerHeight - mh - 8) + 'px';
     }
 
-    fileMenu.querySelectorAll('.fm-item').forEach(el => {
-      el.onclick = () => {
-        const name = menuModel;
-        closeFileMenu();
-        if (!name) return;
-        if (el.dataset.action === 'delete') confirmDelete(name);
-        else openRename(name);
-      };
+    [['file-menu', 'model'], ['folder-menu', 'folder']].forEach(([id, kind]) => {
+      $(id).querySelectorAll('.fm-item').forEach(el => {
+        el.onclick = () => {
+          const ctx = openMenuCtx;
+          closeFileMenu();
+          if (!ctx || ctx.kind !== kind) return;
+          const name = ctx.name, a = el.dataset.action;
+          if (kind === 'model') {
+            if (a === 'delete') confirmDelete(name);
+            else if (a === 'rename') openPathModal({
+              title: 'Editar nombre',
+              intro: `Nombre actual: ${name}`,
+              value: name,
+              onOk: v => apiMove(name, v, 'model'),
+            });
+            else if (a === 'move') openMoveTo(name);
+          } else {
+            if (a === 'delete') confirmDeleteFolder(name);
+            else if (a === 'rename') openPathModal({
+              title: 'Renombrar carpeta',
+              intro: `Ruta actual: ${name}`,
+              value: name,
+              onOk: v => apiMove(name, v, 'folder'),
+            });
+            else if (a === 'new-sub') openPathModal({
+              title: `Nueva subcarpeta en "${lastSeg(name)}"`,
+              intro: `Se creará dentro de: ${name}`,
+              mode: 'segment',
+              okLabel: 'Crear',
+              onOk: v => createFolder(`${name}/${v}`),
+            });
+          }
+        };
+      });
     });
     document.addEventListener('click', e => {
-      if (fileMenu.classList.contains('open') && !fileMenu.contains(e.target)) closeFileMenu();
+      if (openMenuEl && !openMenuEl.contains(e.target)) closeFileMenu();
     });
     $('model-list').addEventListener('scroll', closeFileMenu); // fixed position: close instead of chasing scroll
     window.addEventListener('resize', closeFileMenu);
 
-    // --- rename modal (same NAME_RE validation as the backend) ---
-    const NAME_CLIENT_RE = /^[A-Za-z0-9_-]+$/;
-    let renameFrom = null;
+    // generic path modal: rename model / rename folder / new folder / new subfolder
+    let pathModalOk = null, pathModalMode = 'path';
 
     function closeRename() { $('rename-overlay').classList.remove('open'); }
 
-    function openRename(name) {
-      renameFrom = name;
-      $('rename-from').textContent = `Nombre actual: ${name}`;
+    function openPathModal({ title, intro = '', value = '', mode = 'path', okLabel = 'Guardar', onOk }) {
+      $('rename-title').textContent = title;
+      $('rename-from').textContent = intro;
+      $('rename-save').textContent = okLabel;
       $('rename-error').textContent = '';
+      pathModalOk = onOk;
+      pathModalMode = mode;
       $('rename-overlay').classList.add('open');
       const inp = $('rename-input');
-      inp.value = name;
+      inp.value = value;
       inp.focus();
-      inp.select();
+      if (value) inp.select();
     }
 
-    async function saveRename() {
-      const oldName = renameFrom, newName = $('rename-input').value.trim();
-      const err = $('rename-error');
-      err.textContent = '';
-      if (!NAME_CLIENT_RE.test(newName)) {
-        err.textContent = 'Solo letras, números, guión medio (-) y guión bajo (_).';
+    async function savePathModal() {
+      const val = $('rename-input').value.trim();
+      if (!pathModalOk) return;
+      const valid = pathModalMode === 'segment' ? SEGMENT_RE.test(val) : PATH_CLIENT_RE.test(val);
+      if (!valid) {
+        $('rename-error').textContent = pathModalMode === 'segment'
+          ? 'Solo letras, números, guión medio (-) y guión bajo (_).'
+          : 'Segmentos con letras, números, - y _, separados por / (máx. 5 niveles).';
         return;
       }
-      if (newName === oldName) { closeRename(); return; }
       const btn = $('rename-save');
       btn.disabled = true;
       try {
-        const res = await fetch(`/api/models/${oldName}/rename`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ new_name: newName }),
-        });
-        if (!res.ok) {
-          const d = await res.json().catch(() => ({}));
-          err.textContent = res.status === 409
-            ? 'Ya existe un modelo con ese nombre.'
-            : (d.detail || 'Error al renombrar.');
-          return;
-        }
-        // keep the editor session coherent if the renamed model is open
-        if ($('model-name').value.trim() === oldName) $('model-name').value = newName;
-        if (lastRun && lastRun.model === oldName) {
-          lastRun.model = newName;
-          currentRunKey = `${newName}|${lastRun.raw}`;
-          render();
-        }
-        closeRename();
-        loadModels();
+        const failed = (await pathModalOk(val)) === false; // modal stays open on failure
+        if (!failed) closeRename();
       } finally {
         btn.disabled = false;
       }
@@ -1022,15 +1183,112 @@
 
     $('rename-cancel').onclick = closeRename;
     $('rename-overlay').onclick = (e) => { if (e.target === $('rename-overlay')) closeRename(); };
-    $('rename-save').onclick = saveRename;
-    $('rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') saveRename(); });
-    document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { closeFileMenu(); closeRename(); }
+    $('rename-save').onclick = savePathModal;
+    $('rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') savePathModal(); });
+
+    // folder CRUD
+    async function createFolder(path) {
+      const res = await fetch('/api/models/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        $('rename-error').textContent = d.detail || 'Error al crear la carpeta.';
+        return false;
+      }
+      expandTo(path);
+      loadModels();
+    }
+
+    $('btn-new-folder').onclick = () => openPathModal({
+      title: 'Nueva carpeta',
+      intro: 'Podés anidar con / (por ejemplo: tp1/parteA)',
+      okLabel: 'Crear',
+      onOk: v => createFolder(v),
     });
 
-    // --- drag & drop: import model files from the desktop into the sidebar ---
+    function confirmDeleteFolder(path) {
+      const count = treeData.models.filter(m => m.name.startsWith(path + '/')).length;
+      $('modal-text').textContent =
+        `¿Eliminar la carpeta "${path}" con ${count} modelo${count === 1 ? '' : 's'} y todas sus ejecuciones? Esta acción no se puede deshacer.`;
+      $('modal-overlay').classList.add('open');
+      $('modal-confirm').onclick = async () => {
+        const res = await fetch(`/api/models/${path}?type=folder`, { method: 'DELETE' });
+        if (!res.ok) { alert('Error al eliminar'); return; }
+        closeModal();
+        const cur = $('model-name').value.trim();
+        if (cur === path || cur.startsWith(path + '/')) {
+          $('model-name').value = '';
+          $('editor').value = '';
+          clearResults();
+        }
+        loadModels();
+      };
+    }
+
+    // "Mover a…" modal (drag & drop alternative)
+    let moveToModel = null;
+
+    function closeMove() { $('move-overlay').classList.remove('open'); }
+
+    function openMoveTo(name) {
+      moveToModel = name;
+      const sel = $('move-select');
+      sel.innerHTML = '';
+      const root = document.createElement('option');
+      root.value = '';
+      root.textContent = '— Raíz —';
+      sel.appendChild(root);
+      treeData.folders.forEach(f => {
+        if (f === name || name.startsWith(f + '/')) return; // cannot move into itself
+        const o = document.createElement('option');
+        o.value = f;
+        o.textContent = f;
+        sel.appendChild(o);
+      });
+      sel.value = folderOf(name); // preselect the current parent when listed
+      $('move-title').textContent = `Mover "${lastSeg(name)}" a…`;
+      $('move-overlay').classList.add('open');
+      sel.focus();
+    }
+
+    async function doMoveSelection() {
+      const folder = $('move-select').value;
+      const name = moveToModel;
+      closeMove();
+      if (!name) return;
+      const to = folder ? `${folder}/${lastSeg(name)}` : lastSeg(name);
+      if (to === name) return;
+      await apiMove(name, to, 'model', true);
+    }
+
+    $('move-cancel').onclick = closeMove;
+    $('move-overlay').onclick = (e) => { if (e.target === $('move-overlay')) closeMove(); };
+    $('move-save').onclick = doMoveSelection;
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { closeFileMenu(); closeRename(); closeMove(); }
+    });
+
+    // internal drag onto the list's empty area = move to root
+    $('model-list').addEventListener('dragover', e => {
+      if (e.dataTransfer.types.includes(MIME_MODEL) && e.target === $('model-list')) e.preventDefault();
+    });
+    $('model-list').addEventListener('drop', e => {
+      if (e.dataTransfer.types.includes(MIME_MODEL) && e.target === $('model-list')) {
+        e.preventDefault();
+        const name = e.dataTransfer.getData(MIME_MODEL);
+        if (name && folderOf(name)) apiMove(name, lastSeg(name), 'model', true);
+      }
+    });
+
+    // --- drag & drop: import model files from the DESKTOP into the sidebar ---
+    // (internal moves use MIME_MODEL and never enter this branch)
     const filesSection = $('files-section');
     filesSection.addEventListener('dragover', e => {
+      if (!e.dataTransfer.types.includes('Files')) return;
       e.preventDefault(); // required for the drop event to fire
       filesSection.classList.add('drop-target');
     });
@@ -1038,10 +1296,10 @@
       if (!filesSection.contains(e.relatedTarget)) filesSection.classList.remove('drop-target');
     });
     filesSection.addEventListener('drop', async e => {
+      if (!e.dataTransfer.files || !e.dataTransfer.files.length) return;
       e.preventDefault();
       filesSection.classList.remove('drop-target');
-      const files = [...(e.dataTransfer ? e.dataTransfer.files : [])];
-      if (!files.length) return;
+      const files = [...e.dataTransfer.files];
       const skipped = [];
       for (const f of files) {
         // strip extension, make the stem NAME_RE-safe, cap its length
