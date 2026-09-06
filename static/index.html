@@ -201,6 +201,19 @@
       padding: 8px 10px; color: var(--text); font-size: 13px; margin: 4px 0 12px;
     }
     #move-select:focus { outline: 1px solid var(--accent); }
+    /* Unsaved-changes guard modal */
+    #unsaved-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
+      display: none; align-items: center; justify-content: center; z-index: 25;
+    }
+    #unsaved-overlay.open { display: flex; }
+    #unsaved-modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 20px; width: 90%; max-width: 400px;
+    }
+    #unsaved-modal h2 { font-size: 15px; margin-bottom: 8px; }
+    #unsaved-modal p { font-size: 13px; color: var(--text); margin-bottom: 16px; line-height: 1.5; word-break: break-all; }
+    #unsaved-modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
 
     /* Tooltip: "?" icon that reveals its text on hover.
        Anchored to the RIGHT of the icon: the modal scrolls (overflow-y: auto),
@@ -522,6 +535,18 @@
       <div class="actions">
         <button id="move-cancel">Cancelar</button>
         <button id="move-save" class="primary">Mover</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="unsaved-overlay">
+    <div id="unsaved-modal">
+      <h2>Cambios sin guardar</h2>
+      <p id="unsaved-text"></p>
+      <div class="actions">
+        <button id="unsaved-cancel">Cancelar</button>
+        <button id="unsaved-discard">No guardar</button>
+        <button id="unsaved-save" class="primary">Guardar</button>
       </div>
     </div>
   </div>
@@ -916,7 +941,7 @@
         menu.title = 'Opciones';
         menu.onclick = (e) => { e.stopPropagation(); openMenu('model', m.name, menu); };
         div.append(name, date, menu);
-        div.onclick = () => openModel(m.name);
+        div.onclick = () => requestOpenModel(m.name);
         div.addEventListener('dragstart', e => {
           e.dataTransfer.setData(MIME_MODEL, m.name);
           e.dataTransfer.effectAllowed = 'move';
@@ -1005,6 +1030,7 @@
       const model = await res.json();
       $('model-name').value = model.name;
       $('editor').value = model.content;
+      savedContent = model.content; // fresh from disk: nothing to lose yet
       currentErrorLine = model.last_run?.error_line ?? null;
       if (currentErrorLine) setTab('log');
       refreshEditor();
@@ -1269,7 +1295,7 @@
     $('move-save').onclick = doMoveSelection;
 
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { closeFileMenu(); closeRename(); closeMove(); }
+      if (e.key === 'Escape') { closeFileMenu(); closeRename(); closeMove(); closeUnsaved(); }
     });
 
     // internal drag onto the list's empty area = move to root
@@ -1323,26 +1349,75 @@
       if (skipped.length) alert('No se importaron:\n' + skipped.join('\n'));
     });
 
+    // --- unsaved-changes guard: never silently drop editor content ---
+    let savedContent = ''; // editor content as last loaded/saved
+    let pendingNav = null; // continuation to run once the guard resolves
+
+    function isDirty() { return $('editor').value !== savedContent; }
+
+    function guardUnsaved(continueFn, targetLabel) {
+      if (!isDirty()) { continueFn(); return; }
+      pendingNav = continueFn;
+      const cur = $('model-name').value.trim() || 'modelo sin nombre';
+      $('unsaved-text').textContent = targetLabel
+        ? `Tenés cambios sin guardar en "${cur}". ¿Guardar antes de abrir "${targetLabel}"?`
+        : `Tenés cambios sin guardar en "${cur}".`;
+      // without a name there is nothing to save: offer discard/stay only
+      $('unsaved-save').style.display = $('model-name').value.trim() ? '' : 'none';
+      $('unsaved-overlay').classList.add('open');
+    }
+
+    function closeUnsaved() {
+      $('unsaved-overlay').classList.remove('open');
+      pendingNav = null;
+    }
+
+    function resolveUnsaved(proceed) {
+      const fn = pendingNav;
+      closeUnsaved();
+      if (proceed && fn) fn();
+    }
+
+    function requestOpenModel(name) {
+      guardUnsaved(() => openModel(name), name);
+    }
+
+    $('unsaved-cancel').onclick = () => resolveUnsaved(false);
+    $('unsaved-overlay').onclick = (e) => { if (e.target === $('unsaved-overlay')) resolveUnsaved(false); };
+    $('unsaved-discard').onclick = () => resolveUnsaved(true);
+    $('unsaved-save').onclick = async () => {
+      const ok = await saveCurrentModel();
+      if (ok) resolveUnsaved(true); // on failure keep the modal open; save already alerted
+    };
+    window.addEventListener('beforeunload', e => {
+      if (isDirty()) { e.preventDefault(); e.returnValue = ''; } // tab close with unsaved work
+    });
+
     // --- actions ---
-    $('btn-new').onclick = () => {
+    $('btn-new').onclick = () => guardUnsaved(() => {
       $('model-name').value = '';
       $('editor').value = (appConfig && appConfig.editor && appConfig.editor.template) || '';
+      savedContent = $('editor').value;
       clearResults();
       $('editor').focus();
       loadModels();
-    };
+    }, null);
 
-    $('btn-save').onclick = async () => {
+    async function saveCurrentModel() {
       const name = $('model-name').value.trim();
-      if (!name) { alert('Poné un nombre al modelo'); return; }
+      if (!name) { alert('Poné un nombre al modelo'); return false; }
       const res = await fetch('/api/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, content: $('editor').value }),
       });
-      if (!res.ok) { alert((await res.json()).detail || 'Error al guardar'); return; }
+      if (!res.ok) { alert((await res.json().catch(() => ({}))).detail || 'Error al guardar'); return false; }
+      savedContent = $('editor').value;
       loadModels();
-    };
+      return true;
+    }
+
+    $('btn-save').onclick = () => saveCurrentModel();
 
     $('btn-run').onclick = async () => {
       const btn = $('btn-run');
@@ -1351,11 +1426,13 @@
         // autosave before running so the file is never stale
         const name = $('model-name').value.trim();
         if (!name) { alert('Poné un nombre al modelo'); return; }
-        await fetch('/api/models', {
+        const saved = await fetch('/api/models', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, content: $('editor').value }),
         });
+        if (!saved.ok) { alert((await saved.json().catch(() => ({}))).detail || 'Error al guardar'); return; }
+        savedContent = $('editor').value;
         const res = await fetch('/api/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

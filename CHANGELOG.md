@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 — 2026-09-06
+
+- Guard de cambios sin guardar al abrir otro modelo o crear uno nuevo: guardar / no guardar / cancelar.
+- Aviso al cerrar la pestaña con cambios sin guardar; el autosave de Resolver ahora marca el estado como guardado.
+
 ## 0.5.0 — 2026-09-05
 
 - Carpetas anidadas (hasta 5 niveles) con árbol colapsable en el sidebar (`docs/req_3.md`).
