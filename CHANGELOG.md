@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 — 2026-09-05
+
+- Drag & drop de archivos al sidebar para importar modelos.
+- Menú por archivo (⋮): renombrar (modal validado) y eliminar.
+- Renombrado mueve modelo + meta + ejecuciones juntas (`POST /api/models/{name}/rename`).
+- Layout de altura fija: cada panel scrollea internamente, la página no se estira.
+- Timestamps en hora Argentina (GMT-3); el contenedor corría en UTC.
+
+## 0.3.1 — 2026-09-03
+
+- Timeout duro graceful: devuelve log/solución parcial (`killed_by_timeout`) en vez de un 504 vacío.
+- Corridas serializadas: una glpsol a la vez; reintento en curso recibe `409`.
+
 ## 0.3.0 — 2026-08-30
 
 - Sistema de configuración global (botón ⚙) con tooltip explicativo en cada opción: solver (método, primal/dual, presolve, chequeo exacto, semilla, límites de tiempo/memoria), enteros (relajación LP, gap, cortes), salida (análisis de sensibilidad, solución plana, modo de vista), ejecución (límites blando/duro, historial a guardar) y plantilla del editor. Persiste en `config/config.json`, valida en backend y aplica sin reiniciar (`docs/req_1.md`).

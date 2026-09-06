@@ -14,6 +14,9 @@
     * { box-sizing: border-box; margin: 0; }
     body {
       display: grid; grid-template-columns: var(--sidebar-w, 230px) 1fr 6px var(--result-w, 420px); gap: 12px;
+      /* Cap the single row at viewport height: content growth must scroll
+         inside each panel, never stretch the page body */
+      grid-template-rows: minmax(0, 1fr);
       height: 100vh; padding: 12px; background: var(--bg); color: var(--text);
       font-family: system-ui, sans-serif; font-size: 14px;
     }
@@ -60,14 +63,32 @@
     .model-item.active { background: var(--card); outline: 1px solid var(--accent); }
     .model-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .model-item .date { font-size: 10px; color: var(--muted); flex-shrink: 0; }
-    .model-item .del {
+    .model-item .menu-btn {
       visibility: hidden; background: none; border: none; color: var(--muted);
-      cursor: pointer; font-size: 12px; padding: 2px 4px; flex-shrink: 0; line-height: 1;
+      cursor: pointer; font-size: 15px; font-weight: 700; padding: 2px 6px;
+      flex-shrink: 0; line-height: 1; border-radius: 4px;
     }
-    .model-item:hover .del { visibility: visible; }
-    .model-item .del:hover { color: var(--err); }
+    .model-item:hover .menu-btn { visibility: visible; }
+    .model-item .menu-btn:hover { color: var(--text); background: var(--card); }
+    /* Per-file dropdown menu: fixed-position so the scrolling list never clips it */
+    #file-menu {
+      position: fixed; z-index: 30; min-width: 170px; padding: 4px; display: none;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+    }
+    #file-menu.open { display: block; }
+    #file-menu .fm-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 10px; border-radius: 5px; cursor: pointer; font-size: 13px;
+    }
+    #file-menu .fm-item:hover { background: var(--card); }
+    #file-menu .fm-item.danger { color: var(--err); }
+    /* Drag & drop import: dropping files from the desktop highlights the block */
+    #files-section.drop-target { outline: 2px dashed var(--accent); outline-offset: -6px; border-radius: 8px; }
     /* Main */
-    main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    /* min-height: 0 lets main shrink to the grid row so .editor-wrap
+       (flex: 1) fills the remaining viewport and scrolls internally */
+    main { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
     .toolbar { display: flex; gap: 8px; align-items: center; }
     .toolbar input {
       flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
@@ -115,7 +136,9 @@
     .tab { padding: 8px 16px; cursor: pointer; color: var(--muted); }
     .tab.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
     #result-body {
-      flex: 1; overflow: auto; padding: 12px; margin: 0;
+      /* min-height: 0 cancels the flex item's automatic content-sized minimum,
+         so long solution/log text scrolls here instead of stretching the page */
+      flex: 1; min-height: 0; overflow: auto; padding: 12px; margin: 0;
       font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.45; white-space: pre;
     }
     #status-line { padding: 6px 12px; font-size: 12px; border-top: 1px solid var(--border); color: var(--muted); }
@@ -139,6 +162,27 @@
     #modal p { font-size: 13px; color: var(--muted); margin-bottom: 16px; line-height: 1.5; }
     #modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
     button.danger { background: var(--err); color: #1e1e2e; font-weight: 600; border: none; }
+
+    /* Rename modal (same visual language as the delete modal) */
+    #rename-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
+      display: none; align-items: center; justify-content: center; z-index: 15;
+    }
+    #rename-overlay.open { display: flex; }
+    #rename-modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 20px; width: 90%; max-width: 380px;
+    }
+    #rename-modal h2 { font-size: 15px; margin-bottom: 8px; }
+    #rename-modal p { font-size: 13px; color: var(--muted); margin-bottom: 12px; word-break: break-all; }
+    #rename-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 12px; color: var(--text); font-size: 14px;
+      font-family: ui-monospace, monospace;
+    }
+    #rename-input:focus { outline: 1px solid var(--accent); }
+    #rename-error { color: var(--err); font-size: 12px; min-height: 16px; margin: 6px 0 10px; }
+    #rename-modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
 
     /* Tooltip: "?" icon that reveals its text on hover.
        Anchored to the RIGHT of the icon: the modal scrolls (overflow-y: auto),
@@ -421,6 +465,24 @@
       <div class="actions">
         <button id="config-cancel">Cancelar</button>
         <button id="config-save" class="primary">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="file-menu">
+    <div class="fm-item" data-action="rename">✎ Editar nombre</div>
+    <div class="fm-item danger" data-action="delete">🗑 Eliminar</div>
+  </div>
+
+  <div id="rename-overlay">
+    <div id="rename-modal">
+      <h2>Editar nombre</h2>
+      <p id="rename-from"></p>
+      <input id="rename-input" spellcheck="false" placeholder="nombre_del_modelo">
+      <div id="rename-error"></div>
+      <div class="actions">
+        <button id="rename-cancel">Cancelar</button>
+        <button id="rename-save" class="primary">Guardar</button>
       </div>
     </div>
   </div>
@@ -754,6 +816,7 @@
 
     // --- sidebar lists: executions of the selected model + files (by creation date) ---
     async function loadModels() {
+      closeFileMenu();
       const selected = $('model-name').value.trim();
       const [modelsRes, runsRes] = await Promise.all([
         fetch('/api/models'),
@@ -773,10 +836,10 @@
         name.className = 'name'; name.textContent = m.name;
         const date = document.createElement('span');
         date.className = 'date'; date.textContent = m.created.slice(0, 10);
-        const del = document.createElement('button');
-        del.className = 'del'; del.textContent = '🗑'; del.title = 'Eliminar modelo';
-        del.onclick = (e) => { e.stopPropagation(); confirmDelete(m.name); };
-        div.append(name, date, del);
+        const menu = document.createElement('button');
+        menu.className = 'menu-btn'; menu.textContent = '⋮'; menu.title = 'Opciones';
+        menu.onclick = (e) => { e.stopPropagation(); openFileMenu(m.name, menu); };
+        div.append(name, date, menu);
         div.onclick = () => openModel(m.name);
         list.appendChild(div);
       }
@@ -869,6 +932,139 @@
     $('modal-cancel').onclick = closeModal;
     $('modal-overlay').onclick = (e) => { if (e.target === $('modal-overlay')) closeModal(); };
 
+    // --- per-file "⋮" dropdown ---
+    const fileMenu = $('file-menu');
+    let menuModel = null; // model the open menu refers to
+
+    function closeFileMenu() {
+      fileMenu.classList.remove('open');
+      menuModel = null;
+    }
+
+    function openFileMenu(name, anchor) {
+      menuModel = name;
+      fileMenu.classList.add('open'); // display first, then measure + clamp to viewport
+      const r = anchor.getBoundingClientRect();
+      const mw = fileMenu.offsetWidth, mh = fileMenu.offsetHeight;
+      fileMenu.style.left = Math.max(8, Math.min(r.right - mw, window.innerWidth - mw - 8)) + 'px';
+      fileMenu.style.top = Math.min(r.bottom + 4, window.innerHeight - mh - 8) + 'px';
+    }
+
+    fileMenu.querySelectorAll('.fm-item').forEach(el => {
+      el.onclick = () => {
+        const name = menuModel;
+        closeFileMenu();
+        if (!name) return;
+        if (el.dataset.action === 'delete') confirmDelete(name);
+        else openRename(name);
+      };
+    });
+    document.addEventListener('click', e => {
+      if (fileMenu.classList.contains('open') && !fileMenu.contains(e.target)) closeFileMenu();
+    });
+    $('model-list').addEventListener('scroll', closeFileMenu); // fixed position: close instead of chasing scroll
+    window.addEventListener('resize', closeFileMenu);
+
+    // --- rename modal (same NAME_RE validation as the backend) ---
+    const NAME_CLIENT_RE = /^[A-Za-z0-9_-]+$/;
+    let renameFrom = null;
+
+    function closeRename() { $('rename-overlay').classList.remove('open'); }
+
+    function openRename(name) {
+      renameFrom = name;
+      $('rename-from').textContent = `Nombre actual: ${name}`;
+      $('rename-error').textContent = '';
+      $('rename-overlay').classList.add('open');
+      const inp = $('rename-input');
+      inp.value = name;
+      inp.focus();
+      inp.select();
+    }
+
+    async function saveRename() {
+      const oldName = renameFrom, newName = $('rename-input').value.trim();
+      const err = $('rename-error');
+      err.textContent = '';
+      if (!NAME_CLIENT_RE.test(newName)) {
+        err.textContent = 'Solo letras, números, guión medio (-) y guión bajo (_).';
+        return;
+      }
+      if (newName === oldName) { closeRename(); return; }
+      const btn = $('rename-save');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/models/${oldName}/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ new_name: newName }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          err.textContent = res.status === 409
+            ? 'Ya existe un modelo con ese nombre.'
+            : (d.detail || 'Error al renombrar.');
+          return;
+        }
+        // keep the editor session coherent if the renamed model is open
+        if ($('model-name').value.trim() === oldName) $('model-name').value = newName;
+        if (lastRun && lastRun.model === oldName) {
+          lastRun.model = newName;
+          currentRunKey = `${newName}|${lastRun.raw}`;
+          render();
+        }
+        closeRename();
+        loadModels();
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    $('rename-cancel').onclick = closeRename;
+    $('rename-overlay').onclick = (e) => { if (e.target === $('rename-overlay')) closeRename(); };
+    $('rename-save').onclick = saveRename;
+    $('rename-input').addEventListener('keydown', e => { if (e.key === 'Enter') saveRename(); });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { closeFileMenu(); closeRename(); }
+    });
+
+    // --- drag & drop: import model files from the desktop into the sidebar ---
+    const filesSection = $('files-section');
+    filesSection.addEventListener('dragover', e => {
+      e.preventDefault(); // required for the drop event to fire
+      filesSection.classList.add('drop-target');
+    });
+    filesSection.addEventListener('dragleave', e => {
+      if (!filesSection.contains(e.relatedTarget)) filesSection.classList.remove('drop-target');
+    });
+    filesSection.addEventListener('drop', async e => {
+      e.preventDefault();
+      filesSection.classList.remove('drop-target');
+      const files = [...(e.dataTransfer ? e.dataTransfer.files : [])];
+      if (!files.length) return;
+      const skipped = [];
+      for (const f of files) {
+        // strip extension, make the stem NAME_RE-safe, cap its length
+        const stem = (f.name.replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9_-]/g, '_')).slice(0, 60) || 'modelo';
+        let content = '';
+        try { content = await f.text(); } catch { content = ''; }
+        if (!content.trim()) { skipped.push(`${f.name} (vacío o ilegible)`); continue; }
+        const probe = await fetch(`/api/models/${stem}`);
+        if (probe.ok && !confirm(`"${stem}" ya existe.\n¿Sobreescribirlo con el archivo soltado?`)) {
+          skipped.push(`${f.name} (cancelado)`);
+          continue;
+        }
+        const res = await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: stem, content }),
+        });
+        if (!res.ok) skipped.push(`${f.name} (error al guardar)`);
+      }
+      loadModels();
+      if (skipped.length) alert('No se importaron:\n' + skipped.join('\n'));
+    });
+
     // --- actions ---
     $('btn-new').onclick = () => {
       $('model-name').value = '';
@@ -947,7 +1143,10 @@
       const line = $('status-line');
       line.innerHTML = '';
       const span = document.createElement('span');
-      if (lastRun.exit_code === null) {
+      if (lastRun.killed_by_timeout) {
+        span.className = 'exit-err';
+        span.textContent = `⏱ límite duro (${lastRun.timeout_seconds}s): glpsol matado — revisá el log parcial abajo`;
+      } else if (lastRun.exit_code === null) {
         span.textContent = '⟲ ejecución guardada';
       } else if (lastRun.exit_code === 0) {
         span.className = 'exit-ok';

@@ -5,6 +5,7 @@ Endpoints:
     GET  /api/models         -> list saved .mod files
     GET  /api/models/{name}  -> read one model content
     POST /api/models         -> save {name, content} to models/{name}.mod
+    POST /api/models/{name}/rename -> rename model + meta + run artifacts
     GET  /api/config         -> current configuration (file merged over defaults)
     PUT  /api/config         -> validate + persist config/config.json
     POST /api/run            -> run glpsol on a model, return solution + log
@@ -13,12 +14,19 @@ Endpoints:
 import re
 import json
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+# All user-visible timestamps are Argentina time (GMT-3): stamps and creation
+# dates are displayed as generated, so the container's default UTC (no TZ set
+# in python:*-slim) must never leak into them.
+TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
@@ -41,6 +49,14 @@ META_DIR.mkdir(exist_ok=True)
 CONFIG_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="mctd-glpsol")
+
+# One glpsol at a time: uvicorn runs sync endpoints in a threadpool, so a
+# retry from another tab (or after a page refresh, which orphans the first
+# request server-side) would stack glpsol processes competing for CPU until
+# the hard timeout kills them all. Valid for the single-process uvicorn
+# deployment in the Dockerfile (no --workers).
+_run_lock = threading.Lock()
+_active_run = None  # {"model": str, "started": str} while a run is live
 
 
 def validate_name(name: str) -> str:
@@ -274,7 +290,7 @@ def created_at(name: str) -> str:
         except (json.JSONDecodeError, KeyError):
             pass  # fall through and backfill
     path = MODELS_DIR / f"{name}.mod"
-    created = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    created = datetime.fromtimestamp(path.stat().st_mtime, TZ).isoformat(timespec="seconds")
     meta.write_text(json.dumps({"created": created}), encoding="utf-8")
     return created
 
@@ -304,6 +320,22 @@ def prune_runs(name: str, keep: int) -> int:
                 f.unlink()
                 removed += 1
     return removed
+
+
+def read_run_artifacts(out_file: Path, sol_file: Path, rng_file: Path,
+                       log_file: Path) -> dict:
+    """Best-effort read of the run artifacts that exist on disk.
+
+    glpsol streams its log while it runs, so even a process killed by the
+    hard timeout leaves a partial .log behind; .sol/.txt exist only if it
+    got that far before dying.
+    """
+    return {
+        "solution": out_file.read_text(encoding="utf-8", errors="replace") if out_file.exists() else "",
+        "sol": sol_file.read_text(encoding="utf-8", errors="replace") if sol_file.exists() else "",
+        "ranges": rng_file.read_text(encoding="utf-8", errors="replace") if rng_file.exists() else "",
+        "log": log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else "",
+    }
 
 
 @app.get("/")
@@ -412,6 +444,44 @@ def delete_model(name: str):
     return {"status": "deleted", "name": name, "result_files_removed": removed}
 
 
+@app.post("/api/models/{name}/rename")
+def rename_model(name: str, payload: dict):
+    """Rename a model: move the .mod, its .meta entry and ALL its run
+    artifacts so the execution history follows the model.
+
+    Rejected while a run of this model is live: glpsol writes results under
+    the old name and prune would resurrect orphaned files.
+    """
+    validate_name(name)
+    new_name = validate_name(payload.get("new_name", ""))
+    src = MODELS_DIR / f"{name}.mod"
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="Model not found")
+    if _active_run and _active_run["model"] == name:
+        raise HTTPException(
+            status_code=409,
+            detail="Hay una corrida en curso de este modelo; esperá a que termine.",
+        )
+    if new_name == name:
+        return {"status": "renamed", "name": new_name, "result_files_renamed": 0}
+    dst = MODELS_DIR / f"{new_name}.mod"
+    if dst.exists():
+        raise HTTPException(status_code=409, detail="Ya existe un modelo con ese nombre")
+
+    src.rename(dst)
+    meta_src, meta_dst = META_DIR / f"{name}.json", META_DIR / f"{new_name}.json"
+    if meta_src.exists():
+        meta_src.rename(meta_dst)  # keep the original creation date
+    renamed = 0
+    for pair in run_files_for(name).values():
+        for f in pair.values():
+            if f.exists():
+                # results/{name}-{stamp}.{ext} -> results/{new_name}-{stamp}.{ext}
+                f.rename(RESULTS_DIR / f"{new_name}{f.name[len(name):]}")
+                renamed += 1
+    return {"status": "renamed", "name": new_name, "result_files_renamed": renamed}
+
+
 @app.post("/api/models")
 def save_model(payload: dict):
     name = validate_name(payload.get("name", ""))
@@ -423,7 +493,7 @@ def save_model(payload: dict):
     path.write_text(content, encoding="utf-8")
     if is_new:
         (META_DIR / f"{name}.json").write_text(
-            json.dumps({"created": datetime.now().isoformat(timespec="seconds")}), encoding="utf-8"
+            json.dumps({"created": datetime.now(TZ).isoformat(timespec="seconds")}), encoding="utf-8"
         )
     return {"status": "saved", "name": name}
 
@@ -456,54 +526,79 @@ def put_config(payload: dict):
 
 @app.post("/api/run")
 def run_model(payload: dict):
+    global _active_run
     name = validate_name(payload.get("name", ""))
     path = MODELS_DIR / f"{name}.mod"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Model not found - save it first")
 
-    cfg = load_config()  # read fresh: applies config changes without a restart
-    timeout = cfg["runtime"]["timeout_seconds"]
-
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_file = RESULTS_DIR / f"{name}-{stamp}.txt"
-    sol_file = RESULTS_DIR / f"{name}-{stamp}.sol"
-    rng_file = RESULTS_DIR / f"{name}-{stamp}.rng"
-    log_file = RESULTS_DIR / f"{name}-{stamp}.log"
-    argv = build_argv(cfg, path, out_file, sol_file, rng_file, log_file)
+    # Reject instead of queue: a second concurrent glpsol would only split
+    # CPU with the live one and end in mutual hard-kills (retries made the
+    # original 300s cutoff worse). String detail: the frontend alert()s it.
+    if not _run_lock.acquire(blocking=False):
+        active = _active_run or {}
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Ya hay una corrida en curso (modelo {active.get('model', '?')}, "
+                f"iniciada {active.get('started', '?')}). Esperá a que termine."
+            ),
+        )
 
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, shell disabled
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail=f"glpsol timed out after {timeout}s")
+        cfg = load_config()  # read fresh: applies config changes without a restart
+        timeout = cfg["runtime"]["timeout_seconds"]
 
-    solution = out_file.read_text(encoding="utf-8", errors="replace") if out_file.exists() else ""
-    sol = sol_file.read_text(encoding="utf-8", errors="replace") if sol_file.exists() else ""
-    ranges = rng_file.read_text(encoding="utf-8", errors="replace") if rng_file.exists() else ""
-    log = log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else ""
-    pruned = prune_runs(name, keep=cfg["runtime"]["runs_per_model"])
-    err_line, err_msg = parse_glpk_error(log)
+        stamp = datetime.now(TZ).strftime("%Y%m%d-%H%M%S")
+        out_file = RESULTS_DIR / f"{name}-{stamp}.txt"
+        sol_file = RESULTS_DIR / f"{name}-{stamp}.sol"
+        rng_file = RESULTS_DIR / f"{name}-{stamp}.rng"
+        log_file = RESULTS_DIR / f"{name}-{stamp}.log"
+        argv = build_argv(cfg, path, out_file, sol_file, rng_file, log_file)
+        _active_run = {"model": name, "started": fmt_stamp(stamp)}
 
-    return {
-        "exit_code": proc.returncode,
-        "stamp": fmt_stamp(stamp),
-        "raw": stamp,
-        "model": name,
-        "solution": solution,
-        "sol": sol,
-        "ranges": ranges,
-        "log": log,
-        "solution_file": out_file.name,
-        "log_file": log_file.name,
-        "command": argv,
-        "pruned_runs": pruned,
-        "error_line": err_line,
-        "error_msg": err_msg,
-    }
+        killed = False
+        try:
+            proc = subprocess.run(  # noqa: S603 - fixed argv, shell disabled
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # glpsol was SIGKILLed at the hard limit. Salvage whatever it
+            # left on disk instead of returning a bare 504: the partial log
+            # (and the solution, if tmlim fired and files were written) is
+            # still valuable. Note: a SIGTERM first is pointless, GLPK has
+            # no handler for it.
+            killed = True
+            proc = None
+
+        artifacts = read_run_artifacts(out_file, sol_file, rng_file, log_file)
+        pruned = prune_runs(name, keep=cfg["runtime"]["runs_per_model"])
+        err_line, err_msg = parse_glpk_error(artifacts["log"])
+
+        return {
+            "exit_code": proc.returncode if proc is not None else None,
+            "killed_by_timeout": killed,
+            "timeout_seconds": timeout,
+            "stamp": fmt_stamp(stamp),
+            "raw": stamp,
+            "model": name,
+            "solution": artifacts["solution"],
+            "sol": artifacts["sol"],
+            "ranges": artifacts["ranges"],
+            "log": artifacts["log"],
+            "solution_file": out_file.name,
+            "log_file": log_file.name,
+            "command": argv,
+            "pruned_runs": pruned,
+            "error_line": err_line,
+            "error_msg": err_msg,
+        }
+    finally:
+        _active_run = None
+        _run_lock.release()
 
 
 # Static assets (only /static mount; index is served explicitly above)
