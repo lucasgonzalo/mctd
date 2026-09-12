@@ -118,11 +118,12 @@
     button:hover { border-color: var(--accent); }
     button.primary { background: var(--accent); color: #1e1e2e; font-weight: 600; border: none; }
     button:disabled { opacity: .5; cursor: wait; }
-    /* Editor: line-number gutter + highlight overlay under a transparent textarea */
+    /* Editor: column layout — code row (gutter + textarea) plus position bar */
     .editor-wrap {
-      flex: 1; min-height: 120px; display: flex; overflow: hidden;
+      flex: 1; min-height: 120px; display: flex; flex-direction: column; overflow: hidden;
       background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     }
+    .editor-row { flex: 1; min-height: 0; display: flex; overflow: hidden; }
     .editor-wrap:focus-within { outline: 1px solid var(--accent); }
     #gutter {
       flex: 0 0 auto; padding: 12px 8px 12px 10px; overflow: hidden; user-select: none;
@@ -142,12 +143,21 @@
     }
     #editor::placeholder { color: var(--muted); }
     #editor::selection { background: rgba(137, 180, 250, .25); }
+    /* Cursor position (Ln/Col): editor-owned bar; #status-line stays run-only */
+    #pos-bar {
+      flex-shrink: 0; display: flex; justify-content: flex-end; padding: 3px 10px 4px;
+      font: 11px ui-monospace, monospace; color: var(--muted);
+      border-top: 1px solid var(--border); user-select: none;
+    }
     .kw { color: #cba6f7; } .cm { color: #f5a97f; font-style: italic; }
     .str { color: #a6e3a1; } .num { color: #fab387; }
     .lnerr { display: inline-block; width: 100%; background: rgba(243, 139, 168, .13); }
     /* Results */
     #result-panel { background: var(--panel); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-    #run-header { padding: 10px 12px 4px; font-size: 12px; color: var(--muted); }
+    #run-header {
+      padding: 10px 12px 4px; font-size: 12px; color: var(--muted);
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
     #run-header:not(:empty) { border-bottom: 1px solid var(--border); padding-bottom: 8px; }
     .tabs { display: flex; border-bottom: 1px solid var(--border); }
     .tab { padding: 8px 16px; cursor: pointer; color: var(--muted); }
@@ -160,6 +170,17 @@
     }
     #status-line { padding: 6px 12px; font-size: 12px; border-top: 1px solid var(--border); color: var(--muted); }
     .exit-ok { color: var(--ok); } .exit-err { color: var(--err); }
+
+    /* Dirty dot (toolbar) + run status chip (docs/req_4.md etapa 2) */
+    #dirty-dot { color: var(--accent); font-size: 15px; line-height: 1; flex-shrink: 0; width: 12px; text-align: center; }
+    .chip {
+      flex-shrink: 0; font-size: 11px; font-weight: 600; white-space: nowrap;
+      padding: 2px 9px; border-radius: 999px;
+    }
+    .chip.ok { color: var(--ok); background: rgba(166, 227, 161, .12); }
+    .chip.err { color: var(--err); background: rgba(243, 139, 168, .12); }
+    .chip.warn { color: #f9e2af; background: rgba(249, 226, 175, .12); }
+    .chip.neutral { color: var(--muted); background: var(--card); }
 
     /* Draggable divider between editor and results */
     #drag-handle {
@@ -336,16 +357,20 @@
   <main>
     <div class="toolbar">
       <input id="model-name" placeholder="carpeta/nombre_del_modelo" spellcheck="false">
+      <span id="dirty-dot" hidden title="Cambios sin guardar">●</span>
       <button id="btn-config" title="Configuración">⚙</button>
       <button id="btn-save">Guardar</button>
       <button id="btn-run" class="primary">Resolver ▶</button>
     </div>
     <div class="editor-wrap">
-      <div id="gutter" aria-hidden="true"></div>
-      <div class="code-area">
-        <pre id="highlight" aria-hidden="true"></pre>
-        <textarea id="editor" wrap="off" spellcheck="false" placeholder="var x >= 0;&#10;var y >= 0;&#10;&#10;maximize z: x + 2*y;&#10;&#10;s.t. r: x + y &lt;= 4;&#10;&#10;end;"></textarea>
+      <div class="editor-row">
+        <div id="gutter" aria-hidden="true"></div>
+        <div class="code-area">
+          <pre id="highlight" aria-hidden="true"></pre>
+          <textarea id="editor" wrap="off" spellcheck="false" placeholder="var x >= 0;&#10;var y >= 0;&#10;&#10;maximize z: x + 2*y;&#10;&#10;s.t. r: x + y &lt;= 4;&#10;&#10;end;"></textarea>
+        </div>
       </div>
+      <div id="pos-bar" aria-hidden="true"></div>
     </div>
   </main>
 
@@ -637,6 +662,7 @@
         })
         .join('\n') + '\n';
       syncScroll();
+      updateDirty(); // piggybacks on every input event via the listener below
     }
 
     function syncScroll() {
@@ -1042,7 +1068,7 @@
       const model = await res.json();
       $('model-name').value = model.name;
       $('editor').value = model.content;
-      savedContent = model.content; // fresh from disk: nothing to lose yet
+      setSavedContent(model.content); // fresh from disk: nothing to lose yet
       currentErrorLine = model.last_run?.error_line ?? null;
       if (currentErrorLine) setTab('log');
       refreshEditor();
@@ -1076,7 +1102,7 @@
           if ($('model-name').value === name) {
             $('model-name').value = '';
             $('editor').value = '';
-            savedContent = $('editor').value; // editor emptied by us: not dirty
+            setSavedContent($('editor').value); // editor emptied by us: not dirty
             clearResults();
           }
           loadModels();
@@ -1278,7 +1304,7 @@
           if (cur === path || cur.startsWith(path + '/')) {
             $('model-name').value = '';
             $('editor').value = '';
-            savedContent = $('editor').value; // editor emptied by us: not dirty
+            setSavedContent($('editor').value); // editor emptied by us: not dirty
             clearResults();
           }
           loadModels();
@@ -1329,6 +1355,49 @@
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') { closeFileMenu(); closeRename(); closeMove(); closeUnsaved(); }
     });
+
+    // --- keyboard shortcuts (docs/req_4.md etapa 1) ---
+    const OVERLAYS = ['#modal-overlay', '#config-overlay', '#rename-overlay', '#move-overlay', '#unsaved-overlay'];
+    const overlayOpen = () => OVERLAYS.some(id => $(id).classList.contains('open'));
+    document.addEventListener('keydown', e => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (overlayOpen()) return; // open modals own their keys (Enter/Escape)
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (!$('btn-run').disabled) $('btn-run').click(); // disabled state guards double-fire
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (k === 's' && !e.shiftKey && !e.altKey) { e.preventDefault(); saveCurrentModel(); }
+      // '/' needs Shift on some layouts (es-AR): don't filter shiftKey here
+      else if ((k === '/' || e.code === 'Slash') && e.target === $('editor')) { e.preventDefault(); toggleComment(); }
+    });
+
+    // Ctrl+/: toggle '# ' line comments over the lines the selection spans.
+    // Goes through execCommand('insertText') so the native undo (Ctrl+Z)
+    // survives the edit; direct .value surgery is only the fallback (same
+    // caveat as the Tab handler).
+    function toggleComment() {
+      const ed = $('editor');
+      const { selectionStart: s, selectionEnd: selEnd, value } = ed;
+      const start = value.lastIndexOf('\n', s - 1) + 1;
+      const anchor = (s !== selEnd && value[selEnd - 1] === '\n') ? selEnd - 1 : selEnd;
+      const nl = value.indexOf('\n', anchor);
+      const end = nl === -1 ? value.length : nl;
+      const lines = value.slice(start, end).split('\n');
+      const meaningful = lines.filter(l => l.trim());
+      const remove = meaningful.length > 0 && meaningful.every(l => /^\s*#/.test(l));
+      const block = lines
+        .map(l => remove ? l.replace(/^(\s*)# ?/, '$1') : l.replace(/^(\s*)/, '$1# '))
+        .join('\n');
+      ed.focus();
+      ed.setSelectionRange(start, end);
+      let done = false;
+      try { done = document.execCommand('insertText', false, block); } catch { done = false; }
+      if (!done) ed.value = value.slice(0, start) + block + value.slice(end);
+      ed.setSelectionRange(start, start + block.length);
+      refreshEditor();
+    }
 
     // internal drag onto the list's empty area = move to root
     $('model-list').addEventListener('dragover', e => {
@@ -1454,6 +1523,18 @@
 
     // --- unsaved-changes guard: never silently drop editor content ---
     let savedContent = ''; // editor content as last loaded/saved
+
+    // Single setter for the dirty baseline (docs/req_4.md etapa 2): every
+    // save/open/programmatic-clear goes through here so the dot never drifts.
+    function setSavedContent(v) {
+      savedContent = v;
+      updateDirty();
+    }
+    function updateDirty() {
+      const dirty = isDirty();
+      $('dirty-dot').hidden = !dirty;
+      document.title = dirty ? '• mctd · GLPK' : 'mctd · GLPK';
+    }
     let pendingNav = null; // continuation to run once the guard resolves
 
     function isDirty() { return $('editor').value !== savedContent; }
@@ -1500,7 +1581,7 @@
     $('btn-new').onclick = () => guardUnsaved(() => {
       $('model-name').value = '';
       $('editor').value = (appConfig && appConfig.editor && appConfig.editor.template) || '';
-      savedContent = $('editor').value;
+      setSavedContent($('editor').value);
       clearResults();
       $('editor').focus();
       loadModels();
@@ -1515,7 +1596,7 @@
         body: JSON.stringify({ name, content: $('editor').value }),
       });
       if (!res.ok) { alert((await res.json().catch(() => ({}))).detail || 'Error al guardar'); return false; }
-      savedContent = $('editor').value;
+      setSavedContent($('editor').value);
       loadModels();
       return true;
     }
@@ -1535,7 +1616,7 @@
           body: JSON.stringify({ name, content: $('editor').value }),
         });
         if (!saved.ok) { alert((await saved.json().catch(() => ({}))).detail || 'Error al guardar'); return; }
-        savedContent = $('editor').value;
+        setSavedContent($('editor').value);
         const res = await fetch('/api/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1559,12 +1640,33 @@
     };
 
     // --- results ---
+    // Run status chip (docs/req_4.md etapa 2): headline state + objective
+    // value from the parsed printable solution. Parse availability wins over
+    // exit_code; timeout wins over everything (partial results can still
+    // parse, but the run was cut).
+    const STATUS_ES = { INFEASIBLE: 'INFACTIBLE', UNBOUNDED: 'NO ACOTADO', UNDEFINED: 'INDEFINIDO' };
+    function runChip(parsed) {
+      if (lastRun.killed_by_timeout) return { cls: 'chip err', txt: '⏱ cortado' };
+      const st = parsed && parsed.info.Status;
+      if (st) {
+        const z = (parsed.info.Objective || '').match(/^(\S+)\s*=\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)/);
+        let cls, label;
+        if (st === 'OPTIMAL' || st === 'INTEGER OPTIMAL') { cls = 'chip ok'; label = 'ÓPTIMO'; }
+        else if (st === 'FEASIBLE' || st === 'INTEGER NON-OPTIMAL') { cls = 'chip warn'; label = 'FACTIBLE'; }
+        else { cls = 'chip err'; label = STATUS_ES[st] || st; }
+        return { cls, txt: z ? `${z[1]} = ${z[2]} · ${label}` : label, title: parsed.info.Objective };
+      }
+      if (lastRun.exit_code === 0) return { cls: 'chip ok', txt: '✓ exit 0' };
+      if (lastRun.exit_code == null) return { cls: 'chip neutral', txt: '⟲ guardado' };
+      return { cls: 'chip err', txt: `exit ${lastRun.exit_code}` };
+    }
+
     function render() {
       if (!lastRun) return;
       rebuildTabs();
+      const parsed = parseSolution(lastRun.solution || ''); // shared: tables tab + header chip
       const body = $('result-body');
       if (currentTab === 'tables') {
-        const parsed = parseSolution(lastRun.solution || '');
         const rangesParsed = parseRanges(lastRun.ranges || '');
         body.className = 'pretty';
         let html = parsed ? renderTables(parsed, rangesParsed) : '';
@@ -1574,10 +1676,19 @@
         body.className = '';
         body.textContent = lastRun[currentTab] || '(vacío)';
       }
-      const who = lastRun.model ? `${lastRun.model} · ` : '';
-      $('run-header').textContent = lastRun.stamp ? `${who}Ejecutado: ${lastRun.stamp}` : '';
+      const h = $('run-header');
+      h.innerHTML = '';
+      if (lastRun.stamp) {
+        const who = lastRun.model ? `${lastRun.model} · ` : '';
+        h.append(`${who}Ejecutado: ${lastRun.stamp}`);
+        const c = runChip(parsed);
+        const chip = document.createElement('span');
+        chip.className = c.cls; chip.textContent = c.txt;
+        if (c.title) chip.title = c.title;
+        h.appendChild(chip);
+      }
       // hover the header to see the exact glpsol invocation used for this run
-      $('run-header').title = lastRun.command ? lastRun.command.join(' ') : '';
+      h.title = lastRun.command ? lastRun.command.join(' ') : '';
       const line = $('status-line');
       line.innerHTML = '';
       const span = document.createElement('span');
@@ -1651,7 +1762,18 @@
     $('editor').addEventListener('input', refreshEditor);
     $('editor').addEventListener('scroll', syncScroll);
 
+    // position indicator (docs/req_4.md etapa 2): own bar at the editor foot
+    function updatePos() {
+      const p = $('editor').selectionStart;
+      const before = $('editor').value.slice(0, p);
+      const ln = before.split('\n').length;
+      const col = p - (before.lastIndexOf('\n') + 1) + 1;
+      $('pos-bar').textContent = `Ln ${ln}, Col ${col}`;
+    }
+    ['keyup', 'click', 'input', 'select'].forEach(ev => $('editor').addEventListener(ev, updatePos));
+
     refreshEditor();
+    updatePos();
     loadConfig();
     loadModels();
   </script>

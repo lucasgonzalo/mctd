@@ -81,6 +81,16 @@ end;</pre>
     <h2>¿Cuántas ejecuciones se conservan?</h2>
     <p>Por defecto, las <strong>últimas 5 ejecuciones por modelo</strong> (historial circular: las corridas más viejas se borran automáticamente). Se cambia desde la <em>Configuración</em> (botón ⚙). La sección <em>Últimas ejecuciones</em> del panel lateral muestra las ejecuciones del modelo seleccionado.</p>
 
+    <h2>Atajos de teclado</h2>
+    <ul>
+      <li><code>Ctrl+S</code> (o <code>⌘S</code>) — guardar el modelo.</li>
+      <li><code>Ctrl+Enter</code> — resolver (guarda antes de ejecutar, como el botón).</li>
+      <li><code>Ctrl+/</code> — comentar o descomentar las líneas seleccionadas.</li>
+      <li><code>Tab</code> — insertar 4 espacios en el editor.</li>
+      <li><code>Esc</code> — cerrar modales y menús abiertos.</li>
+    </ul>
+    <p class="note">El punto ● junto al nombre del modelo indica cambios sin guardar; abajo a la derecha del editor se ve la posición del cursor (Ln/Col).</p>
+
     <h2>Configuración</h2>
     <p>El botón <strong>⚙</strong> abre la configuración global: método de resolución (simplex o punto interior, primal/dual), presolve, semilla, límites de tiempo/memoria, opciones de enteros (relajación, gap, cortes), análisis de sensibilidad, tipo de salida (tablas o crudo) y cuántas ejecuciones guardar. Pasá el cursor por cada <strong>?</strong> para ver qué hace cada opción. Los cambios aplican desde el próximo <em>Resolver</em>, sin reiniciar.</p>
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 — 2026-09-11
+
+- Atajos de teclado (`docs/req_4.md`): `Ctrl+S` guardar, `Ctrl+Enter` resolver, `Ctrl+/` comentar/descomentar (con undo nativo), `Esc` cierra modales.
+- Indicadores en vivo: punto ● de cambios sin guardar (toolbar + título), posición del cursor Ln/Col al pie del editor, chip de estado de la corrida (ÓPTIMO/FACTIBLE/INFACTIBLE/cortado) en el header de resultados.
+- Baseline único del dirty flag: todo save/open/clear pasa por `setSavedContent`, el punto nunca queda desincronizado.
+
 ## 0.6.0 — 2026-09-06
 
 - Exportar: todo o una carpeta como `.zip` (modelos + meta + runs + manifest); modelo individual como `.mod` descargable.
