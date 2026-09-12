@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 — 2026-09-11
+
+- Fix: al refrescar la página el archivo abierto ya no aparece como "sin guardar" aunque estuviera guardado; el dirty flag se re-baselinea contra el archivo en disco (`pageshow`). Los cambios realmente sin guardar siguen protegidos.
+
 ## 0.7.1 — 2026-09-11
 
 - Panel de resultados ampliable hasta el 85% del ancho de la ventana (antes tope fijo de 720px).

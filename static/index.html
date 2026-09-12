@@ -1577,6 +1577,25 @@
       if (isDirty()) { e.preventDefault(); e.returnValue = ''; } // tab close with unsaved work
     });
 
+    // --- post-refresh re-baseline ---
+    // A reloaded page gets #editor/#model-name refilled by browser form
+    // restoration, but the baseline above starts empty, so every refresh
+    // looked "unsaved" even right after saving. Re-baseline against the file
+    // on disk: saved-before-refresh starts clean, real unsaved edits keep
+    // the dot. Runs on pageshow (non-persisted) so form data is already
+    // restored when it measures.
+    async function rebaselineAfterRestore() {
+      const name = $('model-name').value.trim();
+      if (!name) return; // unnamed draft: nothing was ever saved, keep it dirty
+      try {
+        const res = await fetch(`/api/models/${encodeURIComponent(name)}`);
+        // model gone or backend unreachable: adopt restored text as baseline
+        setSavedContent(res.ok ? (await res.json()).content : $('editor').value);
+      } catch { setSavedContent($('editor').value); }
+      refreshEditor(); // re-render gutter/highlight for the restored content
+    }
+    window.addEventListener('pageshow', e => { if (!e.persisted) rebaselineAfterRestore(); });
+
     // --- actions ---
     $('btn-new').onclick = () => guardUnsaved(() => {
       $('model-name').value = '';
