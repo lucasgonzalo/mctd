@@ -374,7 +374,7 @@
     </div>
   </main>
 
-  <div id="drag-handle" title="Arrastrá para ajustar · doble clic reinicia"></div>
+  <div id="drag-handle" title="Arrastrá para ajustar · doble clic alterna máximo/mínimo"></div>
 
   <div id="result-panel">
     <div id="run-header"></div>
@@ -1732,7 +1732,9 @@
       if (!dragging) return;
       // results width = from pointer to the right edge (minus body padding)
       const w = window.innerWidth - e.clientX - 12;
-      const clamped = Math.min(Math.max(w, 280), 720);
+      // cap at 85% of the viewport (keep the 280px floor even on tiny windows)
+      const maxW = Math.max(280, Math.floor(window.innerWidth * 0.85));
+      const clamped = Math.min(Math.max(w, 280), maxW);
       document.documentElement.style.setProperty('--result-w', clamped + 'px');
     });
     const stopDrag = () => {
@@ -1744,7 +1746,13 @@
     handle.addEventListener('pointerup', stopDrag);
     handle.addEventListener('pointercancel', stopDrag);
     handle.addEventListener('dblclick', () => {
-      document.documentElement.style.setProperty('--result-w', '420px');
+      // toggle: expand to max (85% viewport) or shrink to min when already at max
+      const maxW = Math.max(280, Math.floor(window.innerWidth * 0.85));
+      const current = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--result-w')
+      ) || 420;
+      const target = current >= maxW - 1 ? 280 : maxW;
+      document.documentElement.style.setProperty('--result-w', target + 'px');
     });
 
     // Tab key inserts spaces instead of leaving the editor

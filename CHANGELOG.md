@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1 — 2026-09-11
+
+- Panel de resultados ampliable hasta el 85% del ancho de la ventana (antes tope fijo de 720px).
+- Doble clic en el divisor alterna entre máximo (85%) y mínimo (280px) en lugar de resetear a 420px.
+
 ## 0.7.0 — 2026-09-11
 
 - Atajos de teclado (`docs/req_4.md`): `Ctrl+S` guardar, `Ctrl+Enter` resolver, `Ctrl+/` comentar/descomentar (con undo nativo), `Esc` cierra modales.
