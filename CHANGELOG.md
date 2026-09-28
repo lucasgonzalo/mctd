@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.3 — 2026-09-27
+
+- El árbol de archivos arranca con todas las carpetas colapsadas; solo se auto-expande la ruta del archivo abierto (ej. tras refrescar la página).
+- Guardar con el nombre cambiado ya no crea un archivo nuevo en silencio: modal con Renombrar (mueve archivo e historial), Crear nuevo o Cancelar (el input vuelve al nombre original). Aplica a Guardar, `Ctrl+S`, el guard de cambios sin guardar y el autosave de Resolver; avisa si el nombre nuevo ya existe en disco.
+
 ## 0.7.2 — 2026-09-11
 
 - Fix: al refrescar la página el archivo abierto ya no aparece como "sin guardar" aunque estuviera guardado; el dirty flag se re-baselinea contra el archivo en disco (`pageshow`). Los cambios realmente sin guardar siguen protegidos.

@@ -239,6 +239,22 @@
     #unsaved-modal h2 { font-size: 15px; margin-bottom: 8px; }
     #unsaved-modal p { font-size: 13px; color: var(--text); margin-bottom: 16px; line-height: 1.5; word-break: break-all; }
     #unsaved-modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+    /* Name-clash modal: save under a changed name -> rename or create new.
+       Sits above the unsaved guard (z-index 25) since it opens from its save. */
+    #clash-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
+      display: none; align-items: center; justify-content: center; z-index: 30;
+    }
+    #clash-overlay.open { display: flex; }
+    #clash-modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 20px; width: 90%; max-width: 400px;
+    }
+    #clash-modal h2 { font-size: 15px; margin-bottom: 8px; }
+    #clash-modal p { font-size: 13px; color: var(--text); margin-bottom: 12px; line-height: 1.5; word-break: break-all; }
+    #clash-exists { color: #f9e2af; font-size: 12.5px; }
+    #clash-error { color: var(--err); font-size: 12px; min-height: 16px; margin: 6px 0 10px; }
+    #clash-modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
 
     /* Tooltip: "?" icon that reveals its text on hover.
        Anchored to the RIGHT of the icon: the modal scrolls (overflow-y: auto),
@@ -584,6 +600,20 @@
         <button id="unsaved-cancel">Cancelar</button>
         <button id="unsaved-discard">No guardar</button>
         <button id="unsaved-save" class="primary">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="clash-overlay">
+    <div id="clash-modal">
+      <h2>Cambiaste el nombre del archivo</h2>
+      <p id="clash-text"></p>
+      <p id="clash-exists" hidden></p>
+      <div id="clash-error"></div>
+      <div class="actions">
+        <button id="clash-cancel">Cancelar</button>
+        <button id="clash-new" title="Deja el original intacto y crea un archivo aparte">Crear nuevo</button>
+        <button id="clash-rename" class="primary" title="El archivo y todo su historial pasan al nuevo nombre">Renombrar</button>
       </div>
     </div>
   </div>
@@ -1000,7 +1030,11 @@
       const runs = runsRes && runsRes.ok ? await runsRes.json() : null; // null = no model selected
 
       treeData.models.sort((a, b) => b.created.localeCompare(a.created)); // newest created first
-      if (expandedFolders === null) expandedFolders = new Set(treeData.folders); // first load: all open
+      if (expandedFolders === null) { // first load: everything collapsed except the open model's path
+        expandedFolders = new Set();
+        const parentPath = folderOf(selected);
+        if (parentPath && treeData.models.some(m => m.name === selected)) expandTo(parentPath);
+      }
 
       const byParent = {}; // folder path -> {folders: [...], models: [...]}
       for (const f of treeData.folders) (byParent[folderOf(f)] ??= { folders: [], models: [] }).folders.push(f);
@@ -1068,7 +1102,7 @@
       const model = await res.json();
       $('model-name').value = model.name;
       $('editor').value = model.content;
-      setSavedContent(model.content); // fresh from disk: nothing to lose yet
+      setSavedContent(model.content, model.name); // fresh from disk: nothing to lose yet
       currentErrorLine = model.last_run?.error_line ?? null;
       if (currentErrorLine) setTab('log');
       refreshEditor();
@@ -1102,7 +1136,7 @@
           if ($('model-name').value === name) {
             $('model-name').value = '';
             $('editor').value = '';
-            setSavedContent($('editor').value); // editor emptied by us: not dirty
+            setSavedContent($('editor').value, null); // editor emptied by us: not dirty
             clearResults();
           }
           loadModels();
@@ -1137,6 +1171,7 @@
       const fix = s => (s === fr ? to : s.startsWith(fr + '/') ? to + s.slice(fr.length) : s);
       const cur = fix($('model-name').value.trim());
       if (cur !== $('model-name').value.trim()) $('model-name').value = cur;
+      if (savedName) savedName = fix(savedName); // the session file follows menu renames/moves
       if (lastRun) {
         lastRun.model = fix(lastRun.model);
         currentRunKey = `${lastRun.model}|${lastRun.raw}`;
@@ -1304,7 +1339,7 @@
           if (cur === path || cur.startsWith(path + '/')) {
             $('model-name').value = '';
             $('editor').value = '';
-            setSavedContent($('editor').value); // editor emptied by us: not dirty
+            setSavedContent($('editor').value, null); // editor emptied by us: not dirty
             clearResults();
           }
           loadModels();
@@ -1353,11 +1388,11 @@
     $('move-save').onclick = doMoveSelection;
 
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { closeFileMenu(); closeRename(); closeMove(); closeUnsaved(); }
+      if (e.key === 'Escape') { closeFileMenu(); closeRename(); closeMove(); closeUnsaved(); cancelClash(); }
     });
 
     // --- keyboard shortcuts (docs/req_4.md etapa 1) ---
-    const OVERLAYS = ['#modal-overlay', '#config-overlay', '#rename-overlay', '#move-overlay', '#unsaved-overlay'];
+    const OVERLAYS = ['#modal-overlay', '#config-overlay', '#rename-overlay', '#move-overlay', '#unsaved-overlay', '#clash-overlay'];
     const overlayOpen = () => OVERLAYS.some(id => $(id).classList.contains('open'));
     document.addEventListener('keydown', e => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -1523,11 +1558,14 @@
 
     // --- unsaved-changes guard: never silently drop editor content ---
     let savedContent = ''; // editor content as last loaded/saved
+    let savedName = null; // disk path backing this session (null = new/unnamed draft)
 
-    // Single setter for the dirty baseline (docs/req_4.md etapa 2): every
-    // save/open/programmatic-clear goes through here so the dot never drifts.
-    function setSavedContent(v) {
+    // Single setter for the session baseline (docs/req_4.md etapa 2): every
+    // save/open/programmatic-clear goes through here so the dot never drifts
+    // and the rename-on-save guard always knows the file's real name.
+    function setSavedContent(v, name) {
       savedContent = v;
+      savedName = name ?? null;
       updateDirty();
     }
     function updateDirty() {
@@ -1577,6 +1615,68 @@
       if (isDirty()) { e.preventDefault(); e.returnValue = ''; } // tab close with unsaved work
     });
 
+    // --- name-clash modal: save under a changed name -> rename or create new ---
+    // The session knows which disk file it came from (savedName); when the
+    // toolbar name differs at save time, ask instead of letting the backend
+    // upsert silently create a second file. Resolves the awaiting save promise.
+    let clashResolve = null; // settles the saveCurrentModel promise awaiting the choice
+
+    function cancelClash() {
+      if (!clashResolve) return;
+      $('model-name').value = savedName; // back to the original name, nothing saved
+      closeClash(false);
+    }
+    function closeClash(ok) {
+      $('clash-overlay').classList.remove('open');
+      const r = clashResolve;
+      clashResolve = null;
+      if (r) r(ok);
+    }
+
+    async function openNameClash(to) {
+      if (clashResolve) return Promise.resolve(false); // already asking (rapid double Ctrl+S)
+      const pending = new Promise(r => { clashResolve = r; }); // set synchronously: blocks re-entry
+      $('clash-text').textContent = `Este archivo es "${savedName}" y lo vas a guardar como "${to}".`;
+      $('clash-error').textContent = '';
+      // warn when "Crear nuevo" (backend upsert) would overwrite an existing file
+      const probe = await fetch(`/api/models/${encodeURIComponent(to)}`).catch(() => null);
+      const exists = probe && probe.ok;
+      $('clash-exists').hidden = !exists;
+      if (exists) $('clash-exists').textContent = `Ya existe un archivo llamado "${to}": "Crear nuevo" lo sobrescribe.`;
+      $('clash-overlay').classList.add('open');
+      $('clash-cancel').focus(); // safest choice: Enter/Esc cancel, nothing is written
+      return pending;
+    }
+
+    $('clash-cancel').onclick = cancelClash;
+    $('clash-overlay').onclick = (e) => { if (e.target === $('clash-overlay')) cancelClash(); };
+    $('clash-new').onclick = async () => {
+      const btn = $('clash-new');
+      btn.disabled = true;
+      try { if (await persistModel($('model-name').value.trim())) closeClash(true); }
+      finally { btn.disabled = false; }
+    };
+    $('clash-rename').onclick = async () => {
+      const to = $('model-name').value.trim();
+      const btn = $('clash-rename');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/models/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: savedName, to, type: 'model' }),
+        });
+        if (!res.ok) {
+          $('clash-error').textContent = res.status === 409
+            ? 'Ya existe un modelo o carpeta con ese nombre.'
+            : ((await res.json().catch(() => ({}))).detail || 'Error al renombrar.');
+          return; // keep the modal open: "Crear nuevo" or Cancelar remain available
+        }
+        afterMove(savedName, to); // input, lastRun, savedName and tree follow the move
+        if (await persistModel(to)) closeClash(true); // then write the edited content
+      } finally { btn.disabled = false; }
+    };
+
     // --- post-refresh re-baseline ---
     // A reloaded page gets #editor/#model-name refilled by browser form
     // restoration, but the baseline above starts empty, so every refresh
@@ -1590,8 +1690,8 @@
       try {
         const res = await fetch(`/api/models/${encodeURIComponent(name)}`);
         // model gone or backend unreachable: adopt restored text as baseline
-        setSavedContent(res.ok ? (await res.json()).content : $('editor').value);
-      } catch { setSavedContent($('editor').value); }
+        setSavedContent(res.ok ? (await res.json()).content : $('editor').value, res.ok ? name : null);
+      } catch { setSavedContent($('editor').value, null); }
       refreshEditor(); // re-render gutter/highlight for the restored content
     }
     window.addEventListener('pageshow', e => { if (!e.persisted) rebaselineAfterRestore(); });
@@ -1600,24 +1700,31 @@
     $('btn-new').onclick = () => guardUnsaved(() => {
       $('model-name').value = '';
       $('editor').value = (appConfig && appConfig.editor && appConfig.editor.template) || '';
-      setSavedContent($('editor').value);
+      setSavedContent($('editor').value, null);
       clearResults();
       $('editor').focus();
       loadModels();
     }, null);
 
-    async function saveCurrentModel() {
-      const name = $('model-name').value.trim();
-      if (!name) { alert('Poné un nombre al modelo'); return false; }
+    async function persistModel(name) {
       const res = await fetch('/api/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, content: $('editor').value }),
       });
       if (!res.ok) { alert((await res.json().catch(() => ({}))).detail || 'Error al guardar'); return false; }
-      setSavedContent($('editor').value);
+      setSavedContent($('editor').value, name);
       loadModels();
       return true;
+    }
+
+    // Saving under a different name than the session's file asks first:
+    // rename it (history follows) or create an independent new file.
+    function saveCurrentModel() {
+      const name = $('model-name').value.trim();
+      if (!name) { alert('Poné un nombre al modelo'); return Promise.resolve(false); }
+      if (savedName && savedName !== name) return openNameClash(name);
+      return persistModel(name);
     }
 
     $('btn-save').onclick = () => saveCurrentModel();
@@ -1626,16 +1733,9 @@
       const btn = $('btn-run');
       btn.disabled = true; btn.textContent = 'Resolviendo…';
       try {
-        // autosave before running so the file is never stale
-        const name = $('model-name').value.trim();
-        if (!name) { alert('Poné un nombre al modelo'); return; }
-        const saved = await fetch('/api/models', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, content: $('editor').value }),
-        });
-        if (!saved.ok) { alert((await saved.json().catch(() => ({}))).detail || 'Error al guardar'); return; }
-        setSavedContent($('editor').value);
+        // autosave before running so the file is never stale (may ask rename/new)
+        if (!(await saveCurrentModel())) return;
+        const name = $('model-name').value.trim(); // re-read: cancel reverts, rename updates
         const res = await fetch('/api/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
